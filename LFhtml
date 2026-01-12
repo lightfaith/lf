@@ -1,0 +1,142 @@
+#!/usr/bin/python3
+desc = """
+Gets HTML page from file or stdin, extracts links.
+"""
+
+import sys
+import traceback
+import pdb
+import re
+from html.parser import HTMLParser
+
+class MyHTMLParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.results = {k: [] for k in link_tags.keys()}
+        self.starttag = None
+        self.interesting_tag = None
+        self.description = None
+        self.position = None
+       
+    def handle_starttag(self, tag, attrs):
+        #self.add_result()
+        if tag in link_tags.keys():
+            self.starttag = tag
+            self.position = self.getpos()
+            for attr in attrs:
+                if attr[0] == link_tags[tag].interesting:
+                    self.interesting_tag = attr[1]
+                    break
+
+    def handle_endtag(self, tag):
+        self.add_result()
+
+    def handle_data(self, data):
+        if self.starttag in [k for k,v in link_tags.items() if v.description == '_inside']:
+            self.description = data
+        pass # print("Encountered some data  :", data)
+
+    def add_result(self):
+        if self.starttag and any((self.interesting_tag, self.description)):
+            #self.description = f'{self.description or ""} (line {self.position[0]})'
+            self.results[self.starttag].append([self.interesting_tag, self.position[0], (self.description or '').strip()])
+        self.starttag = None
+        self.interesting_tag = None
+        self.description = None
+        self.position = None
+        
+
+class LinkTag:
+    def __init__(self, start, interesting, description):
+        self.start = start
+        self.interesting = interesting
+        self.description = description
+
+link_tags = {x.start: x for x in [
+    #(b'<a', b'</a>', b'href'),
+    #(b'<form', b'</form>', b'action'),
+    #(b'<frame', b'</frame>', b'src'),
+    #(b'<img', b'>', b'src'),
+    #(b'<script', b'>', b'src'),
+    #(b'<link', b'>', b'href'),
+    LinkTag('a', 'href', '_inside'),
+    LinkTag('form', 'action', None),
+    LinkTag('frame', 'src', None),
+    LinkTag('img', 'src', 'alt'),
+    LinkTag('script', 'src', None),
+    LinkTag('link', 'href', None),
+    LinkTag('source', 'src', 'type'),
+]} # TODO more
+
+def help():
+    print(desc)
+    print(f'Usage: curl example.com | {sys.argv[0]}')
+    print(f'       {sys.argv[0]} <file> [<file2> ...]')
+
+contents = []
+if len(sys.argv) == 1:
+    # input from stdin
+    contents.append(sys.stdin.buffer.read().decode(errors='replace'))
+else:
+    if ('-h' in sys.argv or '--help' in sys.argv):
+        help()
+        sys.exit(1)
+    # from files
+    for file in sys.argv[1:]:
+        with open(file, 'r') as f:
+            contents.append(f.read())
+
+
+print('\033[33mLinks:\033[0m')
+for content in contents:
+    parser = MyHTMLParser()
+    parser.feed(content)
+    #tree = ET.fromstring(content)
+    #for elem in tree.iter():
+    #    print(dir(elem))
+    #    break
+    max_key_length = max(len(k)+2 for k in parser.results.keys())
+    #print(parser.results.values())
+    max_0_length = max(max(len(vv[0] or '') for vv in v) if v else 0 for v in parser.results.values())
+    max_1_length = max(max(len(str(vv[1] or '')) for vv in v) if v else 0 for v in parser.results.values())
+    max_2_length = max(max(len(vv[2] or '') for vv in v) if v else 0 for v in parser.results.values())
+
+    links = []
+    for k,v in parser.results.items():
+        k = f'[{k}]'
+        if not v:
+            continue
+        for vv in v:
+            vv[0] = vv[0] or ''
+            vv[1] = vv[1] or ''
+            vv[2] = vv[2] or ''
+            #print(f'[{k}] {vv[0]}  {vv[1]}')
+            links.append(f'{k.ljust(max_key_length)} {vv[0].ljust(max_0_length)} {str(vv[1]).ljust(max_1_length)}  {vv[2].ljust(max_2_length)}')
+        #print(k)
+        #print(v)
+        #print()
+    if links:
+        for link in links:
+            print(link)
+        print()
+
+    comments = []
+    for pattern in ('<!--(.*?)-->', '<\\?(.*?)\\?>'):
+        start = pattern.partition('(')[0]
+        end = pattern.partition(')')[2]
+        re_comments = re.findall(pattern, content)
+        for comment in re_comments:
+            comments.append((start, comment, end))
+            #print(start, comment, end)
+    if comments:
+        print('\033[33mComments:\033[0m')
+        for comment in comments:
+                print(*comment)
+        print()
+
+    emails = re.findall(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', content)
+    if emails:
+        print('\033[33mEmails:\033[0m')
+        for email in emails:
+            print(email)
+            

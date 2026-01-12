@@ -1,0 +1,324 @@
+#!/usr/bin/python3
+"""
+This script smartly searches for desired CPEs, CVEs and relevant exploits.
+"""
+import json
+import requests
+import pdb
+import traceback
+import sys
+import re
+import time
+import os
+from math import ceil
+
+cpe_uri = 'https://services.nvd.nist.gov/rest/json/cpes/2.0'
+cve_uri = 'https://services.nvd.nist.gov/rest/json/cves/2.0'
+
+bold = '\033[1m'
+red = '\033[31m'
+green = '\033[32m'
+yellow = '\033[33m'
+blue = '\033[34m'
+magenta = '\033[35 m'
+cyan = '\033[36m'
+gray = '\033[37m'
+none = '\033[0m'
+
+sleep_time = 6.1
+last_api_call = 0 # timestamp
+
+def help():
+    print(f'Usage: {sys.argv[0]} <software> [<version>]')
+    print(f'       {sys.argv[0]} <software_list_file>')
+    print(f'       {sys.argv[0]}                            # from stdin')
+
+def main():
+    save_history = False # only if read from file
+    history_file = './.lfcves_history'
+    #pdb.set_trace()
+
+    # get individual queries (lines to search for)
+    queries = []
+    if len(sys.argv) > 1:
+        if '--help' in sys.argv:
+            help()
+            sys.exit(0)
+            
+        # try to load file
+        if len(sys.argv) == 2 and os.path.isfile(sys.argv[1]):
+            with open(sys.argv[1], 'r') as f:
+                queries = f.read().splitlines()
+            save_history = True
+        else:
+            # use argv as one entry
+            queries.append(' '.join(sys.argv[1:]))
+    else:
+        # stdin
+        try:
+            for line in sys.stdin:
+                if not line.strip():
+                    break
+                queries.append(line)
+        except EOFError:
+            pass
+    
+    # create history file
+    if len(queries)>1 and save_history:
+        try:
+            with open(history_file, 'a') as f:
+                pass
+        except:
+            print(f'Warning: Cannot open {history_file}, ignoring.', file=sys.stderr)
+            save_history = False
+
+    # deal with each query
+    for query in queries:
+        query = query.strip()
+        # None? skip
+        if not query or query.startswith('#'):
+            continue
+
+        # already processed? skip
+        try:
+            with open(history_file, 'r') as f:
+                if save_history and query in f.read().splitlines():
+                    print(f'"{query}" already processed, skipping (remove from {history_file}) to rescan.', file=sys.stderr)
+                    continue
+        except:
+            pass
+
+        if len(queries) > 1:
+            print(f'\n{bold}{cyan}>>> {query} <<<{none}\n')
+
+        # is that cve?
+        #pdb.set_trace()
+        if re.match('^((cve|CVE)-)?[0-9]+-[0-9]+$', query):    
+            cves = get_cves(query, mode='cve')
+            if cves:
+                pprint_cve(cves[0])
+        else:
+            # not a cve, try to find cpe
+            if query.startswith('cpe:'):
+                cpes = get_cpes(query, mode='matchstring')
+            else:
+                cpes = get_cpes(query, mode='keyword')
+            if cpes:
+                print(f'{green}{bold}Matching CPEs{none}')
+                for cpe in cpes:
+                    pprint_cpe(cpe, short=(len(cpes)!=1))
+                print()
+            else: # try less specific if possible
+                if query.count(' ') > 0:
+                    cpes = get_cpes(query.rpartition(' ')[0], mode='keyword')
+                    if cpes:
+                        print(f'{green}{bold}Matching CPEs (more generic){none}')
+                        for cpe in cpes:
+                            pprint_cpe(cpe, short=(len(cpes)!=1))
+                        print()
+            
+            if len(cpes) == 1:
+                print(f'{green}{bold}CVE match for CPE{none}')
+                cpe = cpes[0]['cpeName']
+                cves = get_cves(cpe, mode='cpe')
+                # TODO for searchsploit break the field and use just 'product version'
+                for cve in cves:
+                    pprint_cve(cve, cpe=cpe)
+            else:
+                print(f'{green}{bold}CVE match (keyword search){none}')
+                cves = get_cves(query, mode='keyword')
+                for cve in cves:
+                    pprint_cve(cve)
+
+        # searchsploit
+        print(f'{green}{bold}Searchsploit{none}')
+        sys.stdout.flush()
+        os.system(f'searchsploit {query}')
+        
+        # save history
+        if save_history:
+            with open(history_file, 'a') as f:
+                f.write(f'{query}\n')
+
+def get_pages(url, params={}, extract=None):
+    global last_api_call
+    all_results = []
+    wait_prompt_used = False
+
+    params["resultsPerPage"] = 2000
+    params["startIndex"] = 0
+    extract = extract or (lambda x: x)
+
+    while True:
+        # should we wait so API is not overloaded?
+        diff = time.time() - last_api_call
+        if diff < sleep_time:
+            time.sleep(sleep_time-diff)
+        #print('.')
+        response = requests.get(url, params=params)
+        last_api_call = time.time()
+        try:
+            data = response.json()
+        except:
+            return []
+
+        all_results.extend(extract(data))
+        # Check for pagination
+        total_results = data.get('totalResults', 0)
+        start_index = params.get('startIndex', 0)
+        results_per_page = params.get('resultsPerPage', 200)
+        todo_queries_count = ceil((total_results-start_index)//results_per_page)
+        if todo_queries_count >=3:
+            print(f'\033[33mThere are many results, you will wait about {int(sleep_time*todo_queries_count)} s.\033[0m       \r', end='')
+            wait_prompt_used = True
+        
+        if start_index + results_per_page >= total_results:
+            break  # Exit loop if all pages are fetched
+        
+        params['startIndex'] += results_per_page
+        time.sleep(sleep_time)
+    if wait_prompt_used:
+        print(' '*80 + '\r', end='')
+    return all_results
+
+# -------------
+
+def get_cpes(query, mode='keyword'):
+    all_results = []
+    if mode == 'matchstring':
+        data = get_pages(f'{cpe_uri}?cpeMatchString={query}', extract=lambda x: x.get('products', []))
+    else: # 'keyword':
+        data = get_pages(f'{cpe_uri}?keywordSearch={query}', extract=lambda x: x.get('products', []))
+	# extract info
+    for product in data:
+        cpe = product.get('cpe', {})
+        if cpe.get('deprecated'):
+            continue  # Skip deprecated CPEs
+        
+        # Extract relevant details
+        cpe_name = cpe.get('cpeName', 'N/A')
+        title = next((title.get('title') for title in cpe.get('titles', []) if title.get('lang') == 'en'), 'N/A')
+        refs = [ref.get('ref') for ref in cpe.get('refs', [])]
+
+        all_results.append({
+            'cpeName': cpe_name,
+            'title': title,
+            'refs': refs
+        })
+    return all_results
+
+def pprint_cpe(cpe, short=True):
+    if short:
+        print(cpe.get('cpeName', ''))
+    else:
+         print(f"{cpe['cpeName']}")
+         print(f"{green}# {cpe['title']}{none}")
+         for ref in cpe['refs']:
+             print(f"  {green}{ref}{none}")
+         print()
+
+# -------------
+
+def get_cves(arg, mode='keyword'):
+    if mode == 'cve':
+        arg = arg.upper()
+        if not arg.startswith('CVE-'):
+            arg = f'CVE-{arg}'
+        params = {'cveId': arg}
+    elif mode == 'cpe':
+        params = {'cpeName': arg.partition(':*')[0]}
+    else: # keyword
+        params = {'keywordSearch': arg}
+
+    data = get_pages(cve_uri, params=params, extract=lambda x: x.get('vulnerabilities', []))
+    all_results = []
+    
+    # Extract required information
+    for vuln in data:
+        result = {}
+        cve = vuln.get('cve', {})
+        result['id'] = cve.get('id')
+        result['published'] = cve.get('published')
+        result['vulnStatus'] = cve.get('vulnStatus')
+        # ignore entries with wrong status
+        if result['vulnStatus'] in ('Deferred', 'Rejected'):
+            continue
+
+        # Description in English
+        result['description_en'] = next((desc['value'] for desc in cve.get('descriptions', []) if desc['lang'] == 'en'), None)
+        
+        # CVSS V2 scores
+        cvssv2 = next((metric for metric in cve.get('metrics', {}).get('cvssMetricV2', [])), {})
+        result['cvssv2_exploitability'] = cvssv2.get('exploitabilityScore')
+        result['cvssv2_impact'] = cvssv2.get('impactScore')
+
+        # CWE IDs
+        cwe_int = lambda x: (int(x) if x.isdigit() else 0)
+        result['cwe_ids'] = sorted(set([desc['value'] for weakness in cve.get('weaknesses', []) for desc in weakness.get('description', []) if desc['lang'] == 'en']), key=lambda x: cwe_int(x.partition('-')[2]))
+        
+        # Vulnerable CPEs
+        result['vulnerable_cpes'] = []
+        for config in cve.get('configurations', []):
+            for node in config.get('nodes', []):
+                for cpeMatch in node.get('cpeMatch', []):
+                    if cpeMatch.get('vulnerable'):
+                        result['vulnerable_cpes'].append({
+                            'criteria': cpeMatch.get('criteria'),
+                            'versionStartIncluding': cpeMatch.get('versionStartIncluding'),
+                            'versionEndExcluding': cpeMatch.get('versionEndExcluding')
+                        })
+
+        # References with "Exploit" tag
+        result['references_exploit'] = [ref['url'] for ref in cve.get('references', []) if 'Exploit' in ref.get('tags', [])]
+        all_results.append(result)
+    #pdb.set_trace()
+    return sorted(all_results, key=lambda x: x['id'], reverse=True)
+
+def pprint_cve(cve, cpe=None):
+        # Print extracted information
+        vulnStatus = (f'{blue}' if cve['vulnStatus'] in ('Undergoing Analysis', 'Analyzed') else f'{yellow}')+cve['vulnStatus']
+        exps = cve['cvssv2_exploitability'] or '?'
+        try:
+            exps = f'{blue}E '+(f'{green}' if exps <= 4 else (f'{yellow}' if exps <= 7 else f'{red}')) + f'{exps}'
+        except:
+            exps = f'{blue}E {gray}?'
+        imps = cve['cvssv2_impact'] or '?'
+        try:
+            imps = f'{blue}I '+(f'{green}' if imps <= 4 else (f'{yellow}' if imps <= 7 else f'{red}')) + f'{imps}'
+        except:
+            imps = f'{blue}I {gray}?'
+        exploits = len(cve['references_exploit'])
+        exploits = f'  {bold}{red}\u2620 {exploits} exploits{none}' if exploits else ''
+        print(f"{bold}{cve['id']}{none} {blue}# {cve['published'].partition('T')[0]}, {vulnStatus}, {exps} {imps}{exploits} {blue}https://www.cvedetails.com/cve/{cve['id']}{none}")
+
+        print(f'{blue}{", ".join(cve["cwe_ids"])}{none}')
+        print(f"{gray}{cve['description_en']}{none}")
+
+        print(f'{blue}Vulnerable:{none}')
+        for _cpe in cve['vulnerable_cpes']:
+            c = _cpe['criteria']
+            color = f'{yellow}' if c == cpe else f'{blue}'
+            start = _cpe.get('versionStartIncluding', '')
+            end = _cpe.get('versionEndExcluding', '')
+            if start and end:
+                version = f'{start} - {end}'
+            elif start:
+                version = f'{start}+'
+            elif end:
+                version = f'->{end}'
+            else: 
+                version = ''
+            print(f'  {color}{c}  {cyan}{version}{none}')
+        
+        if exploits:
+            print(f'{yellow}Exploits:{none}')
+            for exploit in cve['references_exploit']:
+                print(f"  {yellow}{exploit}{none}")
+        
+        print()
+
+
+# -----------------------
+
+if __name__ == '__main__':
+    main()

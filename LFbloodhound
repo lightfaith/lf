@@ -1,0 +1,883 @@
+#!/usr/bin/python3
+# function to unzip file and access individual files in memory
+import zipfile
+import traceback
+import pdb
+import re
+import sys
+import json
+from datetime import datetime
+import pickle
+
+kb = {}
+
+def unzip_file_in_memory(zip_path):
+    """
+    Unzips a file and returns a dictionary with filenames as keys and file contents as values.
+    
+    :param zip_path: Path to the zip file
+    :return: Dictionary with filenames and their contents
+    """
+    file_contents = {}
+    
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        for file_info in zip_ref.infolist():
+            with zip_ref.open(file_info) as file:
+                match = re.match(r'.*_(\w+)\.json$', file_info.filename)
+                if match:
+                    key = match.groups()[0]
+                    if not key in file_contents.keys():
+                        file_contents[key] = []
+                    file_contents[key].append(json.loads(file.read()))
+    
+    return file_contents
+
+def colorize(color, *args):
+    colors = {
+        'critical': '\033[91m',
+        'high': '\033[33m',
+        'medium': '\033[93;1m',
+        'normal': '\033[97m',    
+        'low': '\033[37m',
+        'title': '\033[94;1m',
+        'interesting': '\033[92m',
+        'bold': '\033[1m',
+        #'Ared': '\033[31m',
+        #'Agreen': '\033[32m',
+        #'Ayellow': '\033[33m',
+        #'Ablue': '\033[34m',
+        #'Amagenta': '\033[35m',
+        #'Acyan': '\033[36m',
+        #'Awhite': '\033[37m',
+        #'red': '\033[91m',
+        #'green': '\033[92m',
+        #'yellow': '\033[93m',
+        #'blue': '\033[94m',
+        #'magenta': '\033[95m',
+        #'cyan': '\033[96m',
+        #'white': '\033[97m',
+        'reset': '\033[0m'
+    }
+    #for k,v in colors.items():
+    #    print(f'{v}{k}{colors["reset"]}')
+    return f"{colors.get(color, colors['reset'])}{' '.join(args)}{colors['reset']}"
+
+def color_if(value, f, true_color, false_color):
+    return colorize(true_color, str(value)) if f(value) else colorize(false_color, str(value))
+
+def colorize_partition(value, separator, colors):
+    colorize_args = zip(colors, value.partition(separator))
+    #print(list(colorize_args))
+    return ''.join([colorize(*x) for x in colorize_args])
+
+def colorize_rpartition(value, separator, colors):
+    colorize_args = zip(colors, value.rpartition(separator))
+    #print(list(colorize_args))
+    return ''.join([colorize(*x) for x in colorize_args])
+
+def get_shortname(sid):
+    try:
+        return kb['objects'][sid].shortname()
+    except:
+        return sid
+
+def sort_by_rid(items):
+    
+    # items is either:
+    #    dict.items() of SID: object
+    #    list of SIDs
+    if isinstance(items, list):
+        try:
+            return sorted(items, key=lambda x: int(x.rpartition('-')[2]))
+        except:
+            return items
+    else:
+        try:
+            return sorted(items, key=lambda x: int(x[0].rpartition('-')[2]))
+        except:
+            return items
+
+class Permissions:
+    DESCRIPTIONS = {
+        "high": {
+            "GenericAll": "Full control over the object",
+            "WriteDacl": "Can modify the ACL (add/remove permissions)",
+            "WriteOwner": "Can change object ownership",
+            "DCSync": "Can replicate domain secrets (like a DC)",
+            "ResetPassword": "Can reset user’s password",
+            "ForceChangePassword": "Can change password without knowing it",
+            "AllowedToAct": "Can impersonate accounts via RBCD",
+            "ReadLAPSPassword": "Can read LAPS local admin password",
+        },
+        "medium": {
+            "GenericWrite": "Can modify most properties",
+            "AddMember": "Can add members to a group",
+            "RemoveMember": "Can remove members from a group",
+            "AllExtendedRights": "Advanced actions (reset pwd, etc.)",
+            "Owns": "Is the owner of this object",
+            "CreateChild": "Can create new child objects (e.g. users)",
+            "DeleteChild": "Can delete child objects",
+            "Delete": "Can delete the object",
+        },
+        "low": {
+            "ReadProperty": "Can read object attributes",
+            "WriteProperty": "Can modify object attributes",
+            "Self": "Has self-modification rights on this object",
+            "AddSelf": "Can add self to groups (rare)",
+            "ExtendedRight": "Has a specific extended right (varies)",
+            "ValidatedSPN": "Can register SPNs for the object",
+            "ValidatedDNSHostName": "Can set the DNS name for a computer account",
+        }
+    }
+
+    @staticmethod
+    def permission_title(permission):
+        for severity, permissions in Permissions.DESCRIPTIONS.items():
+            pass
+
+# group stuff
+
+class Group:
+    format_rules = {
+        "SID": lambda x: colorize_rpartition(x, '-', ('normal', 'normal', 'interesting')),
+        "Name": lambda x: colorize_partition(x, '@', ('normal', 'low', 'low')),
+    }
+    colorize_rules = {  # if condition is met, value will be shown with the specified color during analysis
+        "Name": (lambda x: True, 'interesting', 'normal'),
+        "HighValue": (lambda x: x, 'critical', 'normal'),
+        "AdminCount": (lambda x: x, 'medium', 'normal'),
+
+    }
+    DESCRIPTIONS = {
+        "Name": "Full group name with domain",
+        "SID": "Security Identifier of the group",
+        "Domain": "Active Directory domain of the group",
+        "DistinguishedName": "LDAP path to the group",
+        "SAMAccountName": "Windows short account name",
+        "HighValue": "Is group highly privileged",
+        "AdminCount": "Is group admin-protected",
+    
+        # Safe / Default
+        "Domain Users": "RID 513 – Default group for all domain users; generally safe.",
+        "Authenticated Users": "SID S-1-5-11 – Includes all logged-in users; commonly used in ACLs.",
+        "Everyone": "SID S-1-1-0 – All users, including guests; safe if permissions are limited.",
+        "Users": "RID 545 – Local users with restricted access.",
+        "Guests": "RID 546 – Very limited rights; should be disabled in most environments.",
+        "Interactive": "SID S-1-5-4 – Users logged on locally.",
+        "Network": "SID S-1-5-2 – Users accessing over the network.",
+        "Remote Interactive Logon": "SID S-1-5-14 – Used for RDP access; safe if combined with strong policies.",
+        "Pre-Windows 2000 Compatible Access": "RID 554 – Legacy group; often empty, rarely needed.",
+
+        # Interesting / Conditional Risk
+        "Remote Management Users": "RID 580 – Grants WinRM access; lateral movement vector if local misconfigs exist.",
+        "Event Log Readers": "RID 573 – Can read logs; useful for monitoring or recon.",
+        "Performance Log Users": "RID 559 – Can collect performance data; low risk but useful for enumeration.",
+        "Performance Monitor Users": "RID 558 – Can read performance counters in real time.",
+        "Distributed COM Users": "RID 562 – Can trigger DCOM objects; potentially abusable if targets are misconfigured.",
+        "Cryptographic Operators": "RID 569 – Manage certificates; could affect PKI trust if misused.",
+        "IIS_IUSRS": "RID 568 – Used by IIS; interesting in web server contexts.",
+        "Hyper-V Administrators": "RID 1012 – Full VM control; can create persistence or lateral movement paths.",
+        "Access Control Assistance Operators": "RID 579 – Can view ACLs remotely; low risk but potentially useful for recon.",
+        "Device Owners": "RID 583+ – Seen in modern/IoT systems; not well documented but usually low risk.",
+
+        # Privileged / Escalation Risk
+        "Domain Admins": "RID 512 – Full control over the domain; top-tier privilege.",
+        "Enterprise Admins": "RID 519 – Full control over all domains in the forest.",
+        "Schema Admins": "RID 518 – Can modify AD schema; rarely needed, high abuse potential.",
+        "Account Operators": "RID 548 – Can manage most user accounts; can be abused to escalate.",
+        "Backup Operators": "RID 551 – Can bypass file permissions and access any data; often abused to dump secrets.",
+        "Print Operators": "RID 550 – Can load drivers; useful for DLL hijacking on domain controllers.",
+        "Server Operators": "RID 549 – Can manage services and reboot systems; can run code as SYSTEM.",
+        "Power Users": "RID 547 – Legacy group; can install software or load drivers on older systems.",
+        "Remote Desktop Users": "RID 555 – Can RDP into systems; dangerous if local misconfigurations exist.",
+        "Cert Publishers": "RID 517 – Can publish certificates to AD; abuse possible via misconfigured ADCS.",
+        "Group Policy Creator Owners": "RID 520 – Can create GPOs; if linked to sensitive OUs, can escalate privileges.",
+        "DnsAdmins": "No fixed RID – Can load arbitrary DLLs in the DNS service context; full domain takeover possible."
+
+    }
+
+    @staticmethod
+    def extract_groups(files):
+        """Extract groups from the provided files."""
+        groups = {}
+        #pdb.set_trace()
+        for group in files['groups']:
+            for group_data in group['data']:
+                group = Group(group_data)
+                #name = group.info["Name"].lower()
+                #domain = group.info["Domain"].lower()
+                #key = name[:-len(domain)-1] if name.endswith(domain) else name
+                key = group.info["SID"]  # use SID as key
+                groups[key] = group
+        return groups
+        
+    
+    def __init__(self, group_data):
+        props = group_data.get("Properties", {})
+        self.info = {
+            "Name": props.get("name"),
+            "SID": group_data.get("ObjectIdentifier"),
+            "Domain": props.get("domain"),
+            "DistinguishedName": props.get("distinguishedname", ""),
+            "SAMAccountName": props.get("samaccountname", ""),
+            "HighValue": props.get("highvalue", False),
+            #"Members": group.get("Members", []),  # SID list
+            "AdminCount": props.get("admincount", 0),
+            "Description": props.get("description", "")
+        }
+        
+        # membership
+        # groups hold only direct memberships, unlike users
+        self.members = {'computers': [], 'groups': [], 'users': []}
+        for member in group_data.get("Members", []):
+            #if self.info["SID"].endswith("-1602"):
+            #    pdb.set_trace()
+            if member.get("ObjectIdentifier"):
+                sid = member["ObjectIdentifier"]
+                if member.get("ObjectType") == "User":
+                    self.members['users'].append(sid)
+                elif member.get("ObjectType") == "Group":
+                    self.members['groups'].append(sid)
+                elif member.get("ObjectType") == "Computer":
+                    self.members['computers'].append(sid)
+        self.memberof = []
+
+    def two_way_memberships(self):
+        for sid in self.members['groups']:
+            group = kb['groups'].get(sid)
+            if group:
+                group.memberof.append(self.info["SID"])
+
+    
+    def analyze(self):
+        print(colorize('title', " === Group Info ==="))
+        for k, v in self.info.items():
+            colorize_rule = Group.colorize_rules.get(k)
+            if colorize_rule:
+                v = color_if(v, *colorize_rule)
+            format_rule = Group.format_rules.get(k, lambda x: x)
+            v = format_rule(v)
+            print(f"{k:25}: {v}")
+        
+        print(colorize('title', " --- Members ---"))
+        #pdb.set_trace()
+        #for sid in self.members['users']:
+        #    name = get_shortname(sid)
+        #    print(f"  {name}")
+        #for ot in ['computers', 'groups', 'users']:
+        #    for sid, obj in kb[ot].items():
+        #        if self.info['SID'] in obj.memberof:
+        #            print(f'  {get_shortname(sid)}')
+        for ot, sids in self.members.items():
+            for sid in sort_by_rid(sids):
+                print(f'  {get_shortname(sid)}')
+                
+        #print('memberof', self.memberof)
+        #print('members', self.members)
+
+        # aces
+        print(colorize('title', " --- Aces ---"))
+        for sid in [self.info['SID']]+self.memberof:
+            aces = kb['aces'].get(sid, [])
+            if not aces:
+                continue
+            for right, element_sid in aces:
+                color = 'normal'
+                for dk, dv in Permissions.DESCRIPTIONS.items():
+                    if right in dv:
+                        color = dk
+                        break
+                print(colorize_partition(f"{right:>25} on {get_shortname(element_sid)}", ' on ', (color, 'normal', 'normal')))
+        print()
+    
+    def shortname(self, color='normal'):
+        if '@' in self.info["Name"]:
+            name = colorize_partition(self.info["Name"], '@', (color, 'low', 'low'))
+        elif '\\' in self.info["Name"]:
+            name = colorize_partition(self.info["Name"], '\\', ('low', 'low', color))
+        else:
+            name = self.info["Name"]
+        rid = self.info["SID"].rsplit("-", 1)[-1]
+        return(f"{rid:>7}: 👥 {name}")
+
+# user stuff
+
+class User:
+    format_rules = {
+        "Name": lambda x: colorize_partition(x, '@', ('normal', 'low', 'low')),
+        "LastLogon":  lambda x: f"{x} ({datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S')})" if x else 'Never',
+        "PwdLastSet": lambda x: f"{x} ({datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S')})" if x else 'Never',
+        "SID": lambda x: colorize_rpartition(x, '-', ('normal', 'normal', 'interesting')),
+    }
+    colorize_rules = {  # if condition is met, value will be shown with the specified color during analysis
+        "Name": (lambda x: True, 'interesting', 'normal'),
+        "Enabled": (lambda x: not x, 'low', 'normal'),
+        "AdminCount": (lambda x: x, 'medium', 'normal'),
+        "DontReqPreAuth": (lambda x: x, 'critical', 'normal'),
+        "UnconstrainedDelegation": (lambda x: x, 'critical', 'normal'),
+        "HasSPN": (lambda x: x, 'critical', 'normal'),
+        "TrustedToAuth": (lambda x: x, 'critical', 'normal'),
+        "PwdNeverExpires": (lambda x: x, 'medium', 'normal'),
+    }
+    DESCRIPTIONS = {
+        "Name": "User’s full name or sAMAccountName (e.g., DOMAIN\\jdoe)",
+        "SID": "Security Identifier of the user",
+        "Domain": "The domain this user belongs to (e.g., CORP.LOCAL)",
+        "DistinguishedName": "LDAP path to the user",
+        "SAMAccountName": "Windows short account name",
+        "Enabled": "Whether the account is currently enabled",
+        "LastLogon": "Timestamp of the last logon (may be approximate)",
+        "AdminCount": "Set to 1 if user is/was in a protected group (e.g. Domain Admins)",
+        "HasSPN": "user has an SPN and is Kerberoastable",
+        "UnconstrainedDelegation": "True if account can impersonate anyone on services",
+        "DontReqPreAuth": "True if user doesn't require Kerberos pre-auth (can be AS-REP roasted)",
+        "PwdLastSet": "Timestamp of last password set",
+        "PwdNeverExpires": "True means password never changes – persistence risk",
+        "TrustedToAuth": "True if account can impersonate via RBCD",
+        "Sensitive": "True blocks delegation of this account (e.g. DCs, admins)",
+        "ServicePrincipalNames": "SPNs registered to this user (target for Kerberoasting)",    
+    }
+    risks = {
+        'Unconstrained Delegation': lambda info: info["UnconstrainedDelegation"] and not info["Sensitive"] and info["Enabled"],
+        'RBCD exposure (trustedtoauth)': lambda info: info["TrustedToAuth"] and not info["Sensitive"] and info["Enabled"],
+        'Kerberoasting': lambda info: info["HasSPN"] and info["Enabled"],# AND password is not expired
+        'AS-REP roasting': lambda info: info["DontReqPreAuth"] and info["Enabled"],
+        'Password never expires': lambda info: info["PwdNeverExpires"] and info["Enabled"],
+        'Delegatable + adminCount = 1': lambda info: not info["Sensitive"] and info["AdminCount"] and info["Enabled"]
+    }
+
+    @staticmethod
+    def extract_users(files):
+        """Extract users from the provided files."""
+        users = {}
+        #pdb.set_trace()
+        for user in files['users']:
+            for user_data in user['data']:
+                user = User(user_data)
+                #name = user.info["Name"].lower()
+                #domain = user.info["Domain"].lower()
+                #key = name[:-len(domain)-1] if name.endswith(domain) else name
+                key = user.info["SID"]
+                users[key] = user
+        return users
+    
+    def __init__(self, user_data):
+        props = user_data.get('Properties', {})
+        self.memberof = [] # user holds all relevant groups, even transitive, unlike group objects
+        self.info = {
+            "Name": props.get("name"),
+            "SID": user_data.get("ObjectIdentifier"),
+            "Domain": props.get("domain"),
+            "DistinguishedName": props.get("distinguishedname", ""),
+            "SAMAccountName": props.get("samaccountname", ""),
+            "Enabled": props.get("enabled"),
+            "LastLogon": props.get("lastlogon"),
+            "AdminCount": props.get("admincount"),
+            "HasSPN": props.get("hasspn"),
+            "UnconstrainedDelegation": props.get("unconstraineddelegation"),
+            "DontReqPreAuth": props.get("dontreqpreauth"),
+            "PwdLastSet": props.get("pwdlastset"),
+            "PwdNeverExpires": props.get("pwdneverexpires"),
+            "TrustedToAuth": props.get("trustedtoauth"),
+            "Sensitive": props.get("sensitive"),
+        }
+        self.pgs = user_data.get('PrimaryGroupSID')
+        if self.pgs:
+            kb['groups'][self.pgs].members['users'].append(self.info['SID'])
+        #if self.pgs:
+        #    self.memberof.append(self.pgs)
+        # # will be done in add_groups()
+        self.spns = props.get("serviceprincipalnames", [])
+    
+    def add_groups(self):
+        def get_parent_groups(group):
+            result = []
+            for parentsid in group.memberof:
+                if parentsid not in result:
+                    result.append(parentsid)
+                    parent_group = kb['groups'].get(parentsid)
+                    if parent_group:
+                        result.extend(get_parent_groups(parent_group))
+            return result
+        for sid, group in kb['groups'].items():
+            if self.info["SID"] in group.members['users'] or sid == self.pgs:
+                self.memberof.append(sid)
+                self.memberof.extend(get_parent_groups(group))
+        self.memberof = list(set(self.memberof)) 
+
+    def analyze(self):
+        print(colorize('title', " === User Info ==="))
+        for k, v in self.info.items():
+            colorize_rule = User.colorize_rules.get(k)
+            if colorize_rule:
+                v = color_if(v, *colorize_rule)
+            format_rule = User.format_rules.get(k, lambda x: x)
+            v = format_rule(v)
+            print(f"{k:25}: {v}")
+        # groups
+        print(colorize('title', " --- Group Membership ---"))
+        for g in sort_by_rid(self.memberof):
+            rid = g.rpartition('-')[-1]
+            color = 'normal'
+            if rid in ('513', '11', '1', '545', '546', '4', '2', '555', '554'):
+                color = 'low'
+            elif rid in ('580', '573', '559', '558', '562', '569', '568', '579', '555', '517'):
+                color = 'medium'
+            elif rid in ('1012', '518', '548', '551', '549', '547', '520'):
+                color = 'high'
+            elif rid in ('544', '512', '519'):
+                color = 'critical'
+            try:
+                print(f"  {kb['groups'][g].shortname(color)}")
+            except:
+                print(f"         {g}")
+        
+        # aces
+        print(colorize('title', " --- Aces ---"))
+        for sid in [self.info['SID']]+self.memberof:
+            aces = kb['aces'].get(sid, [])
+            if not aces:
+                continue
+            for right, element_sid in aces:
+                color = 'normal'
+                for dk, dv in Permissions.DESCRIPTIONS.items():
+                    if right in dv:
+                        color = dk
+                        break
+                print(colorize_partition(f"{right:>25} on {get_shortname(element_sid)}", ' on ', (color, 'normal', 'normal')))
+        
+        # spns
+        if self.spns:
+            print(colorize('title', " --- SPNs ---"))
+            for spn in self.spns:
+                print(f"  {spn}")
+ 
+        # risks
+        risks = []
+        for risk, condition in User.risks.items():
+            if condition(self.info):
+                risks.append(risk)
+        if risks:
+            print(colorize('title', " --- Risks ---"))
+            for risk in risks:
+                print(colorize('high', ' ', risk))
+        print()
+    
+    def shortname(self, color='normal'):
+        if '@' in self.info["Name"]:
+            name = colorize_partition(self.info["Name"], '@', (color, 'low', 'low'))
+        elif '\\' in self.info["Name"]:
+            name = colorize_partition(self.info["Name"], '\\', ('low', 'low', color))
+        else:
+            name = self.info["Name"]
+        rid = self.info["SID"].rsplit("-", 1)[-1]
+        return(f"{rid:>7}: 👤 {name}")
+
+# computer stuff
+
+class Computer:
+    format_rules = {
+        "Name": lambda x: colorize_partition(x, '@', ('normal', 'low', 'low')),
+        "LastLogon":  lambda x: f"{x} ({datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S')})" if x else 'Never',
+        "SID": lambda x: colorize_rpartition(x, '-', ('normal', 'normal', 'interesting')),
+        "AllowedToDelegate": lambda x: [get_shortname(xx) for xx in x],
+        "AllowedToAct": lambda x: [get_shortname(xx) for xx in x],
+    }
+    colorize_rules = {  # if condition is met, value will be shown with the specified color during analysis
+        "Name": (lambda x: True, 'interesting', 'normal'),
+        "Enabled": (lambda x: not x, 'low', 'normal'),
+        "UnconstrainedDelegation": (lambda x: x, 'critical', 'normal'),
+        "TrustedToAuth": (lambda x: x, 'critical', 'normal'),
+        "AllowedToDelegate": (lambda x: x, 'high', 'normal'),
+        "AllowedToAct": (lambda x: x, 'high', 'normal'),
+        "LocalAdmins": (lambda x: x, 'medium', 'normal'),
+    }
+    DESCRIPTIONS = {
+        "Name": "Computer name (e.g., WIN10$)",
+        "SID": "Security Identifier of the computer object",
+        "Domain": "AD domain the computer belongs to",
+        "DistinguishedName": "Full LDAP path to the computer object",
+        "OS": "Operating system reported by the machine",
+        "Enabled": "Whether the computer account is enabled",
+        "LastLogon": "Last time the computer account authenticated",
+        "UnconstrainedDelegation": "Machine has unconstrained Kerberos delegation (TGT theft possible)",
+        "TrustedToAuth": "True if machine is trusted to authenticate for delegation (RBCD)",
+        "LAPS": "True if the computer uses Local Administrator Password Solution",
+        "AllowedToDelegate": "List of objects this machine can delegate to (constrained delegation)",
+        "AllowedToAct": "List of principals allowed to impersonate on this machine (RBCD targets)",
+        "LocalAdmins": "List of users/groups with local administrator rights on the machine",
+        "ServicePrincipalNames": "List of SPNs registered for this computer",
+    }
+
+    @staticmethod
+    def extract_computers(files):
+        """Extract users from the provided files."""
+        results = {}
+        #pdb.set_trace()
+        for computer in files['computers']:
+            for data in computer['data']:
+                obj = Computer(data)
+                #name = user.info["Name"].lower()
+                #domain = user.info["Domain"].lower()
+                #key = name[:-len(domain)-1] if name.endswith(domain) else name
+                key = obj.info["SID"]
+                results[key] = obj
+        return results
+
+    def __init__(self, data):
+        props = data.get('Properties', {})
+        self.memberof = [] 
+        self.info = {
+            "Name": props.get("name"),
+            "SID": data.get("ObjectIdentifier"),
+            "Domain": props.get("domain"),
+            "DistinguishedName": props.get("distinguishedname"),
+            "OS": props.get("operatingsystem"),
+            "Enabled": props.get("enabled"),
+            "LastLogon": props.get("lastlogon"),
+            "UnconstrainedDelegation": props.get("unconstraineddelegation"),
+            "TrustedToAuth": props.get("trustedtoauth"),
+            "LAPS": props.get("haslaps"),
+            #"AllowedToDelegate": data.get("AllowedToDelegate"),
+            "AllowedToDelegate": [x.get('ObjectIdentifier', '') for x in data.get("AllowedToDelegate")],
+            #"AllowedToAct": data.get("AllowedToAct"),
+            "AllowedToAct": [x.get('ObjectIdentifier', '') for x in data.get("AllowedToAct")],
+        }
+        pgs = data.get('PrimaryGroupSID')
+        if pgs:
+            self.memberof.append(pgs)
+        self.localadmins = [x['ObjectIdentifier'] for x in data['LocalAdmins']['Results']] if 'LocalAdmins' in data.keys() else []
+        self.spns = props.get("serviceprincipalnames", [])
+
+    
+    def add_groups(self):
+        def get_parent_groups(group):
+            result = []
+            for parentsid in group.memberof:
+                if parentsid not in result:
+                    result.append(parentsid)
+                    parent_group = kb['groups'].get(parentsid)
+                    if parent_group:
+                        result.extend(get_parent_groups(parent_group))
+            return result
+        for sid, group in kb['groups'].items():
+            if self.info["SID"] in group.members['computers']:
+                self.memberof.append(sid)
+                self.memberof.extend(get_parent_groups(group))
+        self.memberof = list(set(self.memberof)) 
+    
+    def analyze(self):
+        print(colorize('title', " === Computer Info ==="))
+        for k, v in self.info.items():
+            if k.startswith('Allowed'):
+                continue
+            colorize_rule = Computer.colorize_rules.get(k)
+            if colorize_rule:
+                v = color_if(v, *colorize_rule)
+            format_rule = Computer.format_rules.get(k, lambda x: x)
+            v = format_rule(v)
+            print(f"{k:25}: {v}")
+        
+        # AllowedTo*
+        alloweds = ('AllowedToDelegate', 'AllowedToAct')
+        for a in alloweds:
+            if self.info.get(a):
+                print(colorize('title', f" --- {a} ---"))
+                for sid in sort_by_rid(self.info[a]):
+                    name = colorize('high', get_shortname(sid))
+                    print(f"  {name}")
+            
+        # local admins
+        if self.localadmins:
+            print(colorize('title', " --- Local Admins ---"))
+            for sid in sort_by_rid(self.localadmins):
+                name = get_shortname(sid)
+                print(f"  {name}")
+        # groups
+        print(colorize('title', " --- Group Membership ---"))
+        for g in sort_by_rid(self.memberof):
+            rid = g.rpartition('-')[-1]
+            color = 'normal'
+            if rid in ('513', '11', '1', '545', '546', '4', '2', '555', '554'):
+                color = 'low'
+            elif rid in ('580', '573', '559', '558', '562', '569', '568', '579', '555', '517'):
+                color = 'medium'
+            elif rid in ('1012', '518', '548', '551', '549', '547', '520'):
+                color = 'high'
+            elif rid in ('544', '512', '519'):
+                color = 'critical'
+            try:
+                print(f"  {kb['groups'][g].shortname(color)}")
+            except:
+                print(f"         {g}")
+        # spns
+        if self.spns:
+            print(colorize('title', " --- SPNs ---"))
+            for spn in self.spns:
+                print(f"  {spn}")
+        # aces
+        print(colorize('title', " --- Aces ---"))
+        for sid in [self.info['SID']]+self.memberof:
+            aces = kb['aces'].get(sid, [])
+            if not aces:
+                continue
+            for right, element_sid in aces:
+                color = 'normal'
+                for dk, dv in Permissions.DESCRIPTIONS.items():
+                    if right in dv:
+                        color = dk
+                        break
+                print(colorize_partition(f"{right:>25} on {get_shortname(element_sid)}", ' on ', (color, 'normal', 'normal')))
+        print()
+    
+    def shortname(self, color='normal'):
+        if '@' in self.info["Name"]:
+            name = colorize_partition(self.info["Name"], '@', (color, 'low', 'low'))
+        elif '\\' in self.info["Name"]:
+            name = colorize_partition(self.info["Name"], '\\', ('low', 'low', color))
+        else:
+            name = self.info["Name"]
+        rid = self.info["SID"].rsplit("-", 1)[-1]
+        return(f"{rid:>7}: 💻 {name}")
+
+# domain stuff
+
+class Domain:
+    format_rules = {
+        "Name": lambda x: colorize_partition(x, '@', ('normal', 'low', 'low')),
+        
+    }
+    colorize_rules = {  # if condition is met, value will be shown with the specified color during analysis
+        "Name": (lambda x: True, 'interesting', 'normal'),
+        
+        "LocalAdmins": (lambda x: x, 'medium', 'normal'),
+    }
+    DESCRIPTIONS = {
+        "Name": "Domain name",
+        "SID": "Security Identifier of the domain",
+        "DistinguishedName": "Full LDAP path of the domain",
+        "HighValue": "", #TODO
+        # Trusts?
+        # GPOChanges?
+    }
+
+    @staticmethod
+    def extract_domains(files):
+        """Extract users from the provided files."""
+        results = {}
+        #pdb.set_trace()
+        for domain in files['domains']:
+            for data in domain['data']:
+                obj = Domain(data)
+                #name = user.info["Name"].lower()
+                #domain = user.info["Domain"].lower()
+                #key = name[:-len(domain)-1] if name.endswith(domain) else name
+                key = obj.info["SID"]
+                results[key] = obj
+        return results
+
+    def __init__(self, data):
+        props = data.get('Properties', {})
+        self.memberof = [] 
+        self.info = {
+            "Name": props.get("name"),
+            "SID": data.get("ObjectIdentifier"),
+            "DistinguishedName": props.get("distinguishedname"),
+            "HighValue": props.get("highvalue"),
+            "Description": props.get("description"),
+            # TODO
+            # Trusts?
+            # GPOChanges?
+        }
+    
+    def analyze(self):
+        print(colorize('title', " === Domain Info ==="))
+        for k, v in self.info.items():
+            colorize_rule = Domain.colorize_rules.get(k)
+            if colorize_rule:
+                v = color_if(v, *colorize_rule)
+            format_rule = Domain.format_rules.get(k, lambda x: x)
+            v = format_rule(v)
+            print(f"{k:25}: {v}")
+        
+        # aces
+        print(colorize('title', " --- Aces ---"))
+        for sid in [self.info['SID']]+self.memberof:
+            aces = kb['aces'].get(sid, [])
+            if not aces:
+                continue
+            for right, element_sid in aces:
+                color = 'normal'
+                for dk, dv in Permissions.DESCRIPTIONS.items():
+                    if right in dv:
+                        color = dk
+                        break
+                print(colorize_partition(f"{right:>25} on {get_shortname(element_sid)}", ' on ', (color, 'normal', 'normal')))
+        print()
+    
+    def shortname(self, color='normal'):
+        return colorize(color, '🌐', self.info["Name"])
+
+# general stuff
+
+def help():
+    print(f'Usage: {sys.argv[0]} <zipfile> [focus]', file=sys.stderr)
+    sys.exit(1)
+
+def bighelp():
+    # description for everything important
+    print(colorize('title', " === Domain properties ==="))
+    for k, desc in Domain.DESCRIPTIONS.items():
+        print(f" {k:>25}: {desc}")
+    print()
+    
+    print(colorize('title', " === Computer properties ==="))
+    for k, desc in Computer.DESCRIPTIONS.items():
+        print(f" {k:>25}: {desc}")
+    print()
+    
+    print(colorize('title', " === User properties ==="))
+    for k, desc in User.DESCRIPTIONS.items():
+        print(f" {k:>25}: {desc}")
+    print()
+
+    print(colorize('title', " === Group properties and standard groups ==="))
+    for k, desc in Group.DESCRIPTIONS.items():
+        print(f" {k:>35}: {desc}")
+    print()
+    
+    print(colorize('title', " === Permissions ==="))
+    for severity, perm_descriptions in Permissions.DESCRIPTIONS.items():
+        for k, desc in perm_descriptions.items():
+            print(f" {k:>25}: {desc}")
+    print()
+    sys.exit(0)
+
+def main():
+    global kb
+    # parse arguments
+    try:
+        files = sys.argv[1]
+        if files in ('help', '--help', '-h'):
+            bighelp()
+        else:
+            cache_file = f'{files}.cached'
+            try:
+                # try to load cached version
+                with open(cache_file, 'rb') as f:
+                    kb = pickle.load(f)
+            except:
+                # no cached version, zip will be parsed
+                kb = {}
+                files = unzip_file_in_memory(files)
+    except:
+        help()
+    try:
+        focus = ' '.join(sys.argv[2:]).lower()
+    except:
+        focus = None
+    
+    #print(files.keys())
+
+    if not kb:
+        # extract content
+        kb['objects'] = {}
+        kb['domains'] = Domain.extract_domains(files)
+        kb['groups'] = Group.extract_groups(files)
+        kb['users'] = User.extract_users(files)
+        kb['computers'] = Computer.extract_computers(files)
+        for _, group in kb['groups'].items():
+            group.two_way_memberships()
+        for _, user in kb['users'].items():
+            user.add_groups()
+        for _, computer in kb['computers'].items():
+            computer.add_groups()
+
+        # get all objects in one place, based on sid
+        kb['objects'].update(kb['domains'])
+        kb['objects'].update(kb['users'])
+        kb['objects'].update(kb['groups'])
+        kb['objects'].update(kb['computers'])
+        ## aces from everything
+        kb['aces'] = {}
+        for file, filelist in files.items():
+            for data in filelist:
+                for element in data['data']:
+                    element_sid = element.get('ObjectIdentifier')
+                    # TODO just for specified domainsid?
+                    try:
+                        aces = element['Aces']
+                        for ace in aces:
+                            principal_sid = ace.get('PrincipalSID')
+                            right = ace.get('RightName')
+                            if principal_sid not in kb['aces']:
+                                kb['aces'][principal_sid] = []
+                            kb['aces'][principal_sid].append((right, element_sid))
+                    except:
+                        continue
+
+        # save cached version 
+        with open(cache_file, 'ab') as f:
+            pickle.dump(kb, f)
+
+    #print(users.keys())
+
+    # present data
+    
+    if focus:
+        category_found = False
+        for key, values in kb.items():
+            #pdb.set_trace()
+            if re.match(rf'--{key}', focus):
+                for sid, obj in sort_by_rid(values.items()):
+                    try:
+                        obj.analyze()
+                        category_found = True
+                    except:
+                        pass
+        if not category_found:
+            exact_match = []
+            wildcard_match = []
+            # sid range?
+            try:
+                ridstart, ridend = re.match(fr'^(\d+)-(\d+)$', focus.lower()).groups()
+                ridrange = range(int(ridstart), int(ridend)+1)
+            except:
+                ridrange = None
+            try:
+                for sid, obj in sorted(kb['objects'].items(), key=lambda x: int(x[0].rpartition('-')[2])):
+                    # was it rid range?
+                    if ridrange:
+                        if int(sid.rpartition('-')[2]) in ridrange:
+                            exact_match.append(obj)
+                    # no range, find match with regex
+                    elif re.match(fr'{focus}@.*', obj.info["Name"].lower()) or focus == obj.info["Name"].lower() or re.match(fr'.*-{focus}$', sid.lower()) or focus == sid.lower():
+                        exact_match.append(obj)
+                    elif re.match(fr'^[^@]*{focus}[^@]*(?:@.*)?$', obj.info["Name"].lower()):
+                        wildcard_match.append(obj)
+
+                if exact_match:
+                    for obj in exact_match:
+                        obj.analyze()
+                else:
+                    for obj in wildcard_match:
+                        obj.analyze()
+                    
+            except:
+                traceback.print_exc()   
+                print('focusing on non-user, not implemented yet.')
+                pass 
+    else: # no focus, give general overview
+
+        print(colorize('title', " === General Overview ==="))
+        
+        keys = ('domains', 'computers', 'users', 'groups')
+        for key in keys:
+            print(f"{key.title()}:", len(kb[key]))
+            #objs = sorted(kb[key].values(), key=lambda x: int(x.info["SID"].rsplit("-", 1)[-1]))
+            for sid, obj in sort_by_rid(kb[key].items()):
+                print(f"  {obj.shortname()}")
+            print()
+    #import pdb; pdb.set_trace() 
+if __name__ == "__main__":
+    main()

