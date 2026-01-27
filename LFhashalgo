@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Tries all formats known to John against known password and hash pair, findidng used algorithm.
+PASS="$1"
+HASH="$2"
+
+if [ -z "$2" ]; then
+	>&2 echo "Usage: $0 <pass> <hash>"
+	exit 1
+fi
+
+tmp_pw=$(mktemp)
+tmp_hash=$(mktemp)
+echo "$PASS" > "$tmp_pw"
+echo "$HASH" > "$tmp_hash"
+tmp_pot=$(mktemp)
+
+# load formats and subformats
+formats=()
+for f in $(john --list=formats 2> /dev/null | tr ',' '\n'); do
+    f="${f## }"   # trim leading spaces
+    f="${f%% }"   # trim trailing spaces
+    [[ -n "$f" ]] && formats+=("$f")
+done
+
+while read -r s; do
+    [[ -n "$s" ]] && formats+=("$s")
+done < <(john --list=subformats | awk '/Format = / {print $3}')
+
+# try them all
+for fmt in "${formats[@]}"; do
+  john --format="$fmt" --wordlist="$tmp_pw" --pot="$tmp_pot" "$tmp_hash" 2>/dev/null | grep -q "No password hashes loaded" && continue
+  if john --show --format="$fmt" --pot="$tmp_pot" "$tmp_hash" 2>/dev/null | grep -q ':'; then
+    echo -e "\033[1;32m[+]\033[0m $fmt"
+    #break
+  else
+    echo -e "\033[1;30m[-]\033[0m $fmt"
+fi
+done
+
+rm -f "$tmp_hash" "$tmp_pw" "$tmp_pot"

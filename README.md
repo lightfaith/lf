@@ -18,12 +18,13 @@ LFadwizard
 CLI parses of BloodHound outputs, when running GUI is inconvenient.
 
 ```
+LFbloodhound --help                            # description of various properties
 LFbloodhound bloodhound.zip                    # list of domain, computer, user and group objects
 LFbloodhound bloodhound.zip --domains          # detailed view of domains
 LFbloodhound bloodhound.zip --computers        # detailed view of computers
 LFbloodhound bloodhound.zip --users            # detailed view of users
 LFbloodhound bloodhound.zip --groups           # detailed view of groups
-LFbloodhound bloodhound.zip --users 1001-1005  # example of filtering with RID
+LFbloodhound bloodhound.zip 1001-1005          # example of filtering with RID
 ```
 
 ## LFcves
@@ -47,7 +48,25 @@ Group by for CSV files and basic statistics
 
 ```
 cat /etc/passwd | LFgroupby -d : -i 1,2,3,4,5,6  # count usage of shells
+cat access.log | LFgroupby -d ' ' -f 1,6         # statistics by IP and method
 ```
+
+## LFhashalgo
+
+Tries all JTR's formats and subformats against known password and its hash.
+
+```
+./LFhashalgo password 696d29e0940a4957748fe3fc9efd22a3
+[-] LM
+[-] dynamic_n
+...
+[-] ZipMonster
+[-] dynamic_0
+[+] dynamic_2
+[-] dynamic_3
+...
+```
+
 
 ## LFhtml
 

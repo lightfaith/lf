@@ -172,6 +172,8 @@ hints = [
     # website enumeration
     Hint(name='Web fuzzing', command='ffuf -c -u http://{domain}/FUZZ -w {directories_dict}:FUZZ -recursion -e .txt,.gz,{extension}', block='website enumeration', service='HTTP', ports='80 443', 
         tool='ffuf', tags='loud', comment='find files on domain', next_step=''),
+    Hint(name='Web fuzzing', command='ffuf -c -u http://{domain}/FUZZ/ -w wordlists/directories:FUZZ', block='website enumeration', service='HTTP', ports='80 443', 
+        tool='ffuf', tags='loud', comment='if /dir and /dir/ is treated differently', next_step=''),
     Hint(name='Web fuzzing', command='ffuf -c -u http://{domain} -H "Host: FUZZ.{domain}" -w {subdomains_dict}:FUZZ -ac', block='website enumeration', service='HTTP', ports='80 443', 
         tool='ffuf', tags='loud', comment='find subdomains on same machine', next_step=''),
     Hint(name='Web fuzzing', command='''ffuf -c -w {vectors_dict} -request-proto http -request {request_file}''', block='website enumeration', service='HTTP', ports='80 443', 
