@@ -44,6 +44,7 @@ config = {
     'avg_columns': [],    # do avg on them
     'min_columns': [],    # do min on them
     'max_columns': [],    # do max on them
+    'columns': [],
     'ignore_columns': [], # drop them before group by
     'force_utc': False,
 }
@@ -62,6 +63,9 @@ for i in range(len(sys.argv)):
             i += 1
         elif sys.argv[i] == '-tb': # time bucket count
             config['time_buckets'] = int(sys.argv[i+1])
+            i += 1
+        elif sys.argv[i] == '-f': # columns
+            config['columns'].extend([int(x) for x in sys.argv[i+1].split(',')])
             i += 1
         #elif sys.argv[i] == '-g': # groupby columns
         #    config['groupby_columns'].extend([int(x) for x in sys.argv[i+1].split(',')])
@@ -103,11 +107,13 @@ if not data:
     sys.exit(1)
 # sort (by time and non-mentioned columns
 col_count = len(data[0])
+if not config['columns']:
+    config['columns'] = list(range(1,col_count+1))
 noig = config['sum_columns'] + config['avg_columns'] + config['min_columns'] + config['max_columns'] + config['ignore_columns']
-ig = tuple([x-1 for x in range(1, col_count+1) if x not in noig])
-#print('ig', ig)
+ig = tuple([x for x in config['columns'] if x not in noig ])
+print('ig', ig)
 data = sorted(data, key=operator.itemgetter(*ig))
-groupby_columns = [x for x in ig if (not config.get('time_column') or x != config['time_column']-1)]
+groupby_columns = [x-1 for x in ig if x in config['columns'] and (not config.get('time_column') or x != config['time_column']-1)]
 #print(data)
 
 # create buckets
