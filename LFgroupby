@@ -111,7 +111,7 @@ if not config['columns']:
     config['columns'] = list(range(1,col_count+1))
 noig = config['sum_columns'] + config['avg_columns'] + config['min_columns'] + config['max_columns'] + config['ignore_columns']
 ig = tuple([x for x in config['columns'] if x not in noig ])
-print('ig', ig)
+#print('ig', ig)
 data = sorted(data, key=operator.itemgetter(*ig))
 groupby_columns = [x-1 for x in ig if x in config['columns'] and (not config.get('time_column') or x != config['time_column']-1)]
 #print(data)
